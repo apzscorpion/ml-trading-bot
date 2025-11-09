@@ -1,7 +1,7 @@
 <template>
   <div class="app">
     <header class="header">
-      <h1>📈 AI Trading Prediction Chart</h1>
+      <h1>📈 ML Trading Bot</h1>
       <div class="header-right">
         <NotificationCenter ref="notificationCenter" />
         <div class="connection-status" :class="{ connected: isConnected }">

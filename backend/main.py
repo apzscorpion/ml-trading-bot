@@ -446,7 +446,7 @@ async def lifespan(app: FastAPI):
 
 # Create FastAPI app
 app = FastAPI(
-    title="Trading Prediction API",
+    title="ML Trading Bot API",
     description="AI-powered stock prediction system with multiple bots",
     version="1.0.0",
     lifespan=lifespan
@@ -488,7 +488,7 @@ app.include_router(backtest.router)
 async def root():
     """Root endpoint"""
     return {
-        "name": "Trading Prediction API",
+        "name": "ML Trading Bot API",
         "version": "1.0.0",
         "status": "running",
         "websocket": "/ws",
@@ -628,7 +628,7 @@ if __name__ == "__main__":
     # Display startup banner
     network_ip = get_network_ip()
     print("\n" + "=" * 70)
-    print("🚀 Starting Trading Prediction API")
+    print("🚀 Starting ML Trading Bot API")
     print("=" * 70)
     print(f"📍 Local Access:   http://localhost:8182")
     print(f"📍 Network Access: http://{network_ip}:8182")

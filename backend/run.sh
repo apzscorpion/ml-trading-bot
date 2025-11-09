@@ -1,7 +1,7 @@
 #!/bin/bash
 # Script to run the backend server
 
-echo "🚀 Starting Trading Prediction Backend..."
+echo "🚀 Starting ML Trading Bot Backend..."
 
 # Activate virtual environment if it exists
 if [ -d "venv" ]; then

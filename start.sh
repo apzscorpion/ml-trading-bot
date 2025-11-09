@@ -1,7 +1,7 @@
 #!/bin/bash
 
 ##############################################################################
-# Trading Prediction App - Complete Startup Script
+# ML Trading Bot - Complete Startup Script
 # This script stops any running instances, starts backend and frontend,
 # and logs all output to files and console
 ##############################################################################
@@ -350,7 +350,7 @@ main() {
     echo -e "${CYAN}"
     echo "╔════════════════════════════════════════════════════════════════╗"
     echo "║                                                                ║"
-    echo "║        📈 AI Trading Prediction App - Startup Script          ║"
+    echo "║             📈 ML Trading Bot - Startup Script                ║"
     echo "║                                                                ║"
     echo "╚════════════════════════════════════════════════════════════════╝"
     echo -e "${NC}\n"

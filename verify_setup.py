@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Setup verification script for Trading Prediction App
+Setup verification script for ML Trading Bot
 Checks if all dependencies and configurations are correct
 """
 import sys
@@ -161,7 +161,7 @@ def check_env_file():
 def main():
     """Run all checks"""
     print("=" * 60)
-    print("🔍 Trading Prediction App - Setup Verification")
+    print("🔍 ML Trading Bot - Setup Verification")
     print("=" * 60)
     
     checks = {

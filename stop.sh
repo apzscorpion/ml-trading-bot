@@ -1,7 +1,7 @@
 #!/bin/bash
 
 ##############################################################################
-# Trading Prediction App - Stop Script
+# ML Trading Bot - Stop Script
 # Stops all running backend and frontend services
 ##############################################################################
 
@@ -34,7 +34,7 @@ print_info() {
     echo -e "${YELLOW}ℹ $1${NC}"
 }
 
-print_header "Stopping Trading Prediction App"
+print_header "Stopping ML Trading Bot"
 
 # Stop by PID files
 if [ -f "$LOG_DIR/backend.pid" ]; then

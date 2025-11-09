@@ -24,7 +24,7 @@ const networkIP = getNetworkIP();
 const port = 5155;
 
 console.log('\n' + '='.repeat(70));
-console.log('🎨 Trading Prediction Frontend');
+console.log('🎨 ML Trading Bot Frontend');
 console.log('='.repeat(70));
 console.log(`📍 Local Access:   http://localhost:${port}`);
 console.log(`📍 Network Access: http://${networkIP}:${port}`);

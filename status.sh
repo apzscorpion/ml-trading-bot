@@ -1,7 +1,7 @@
 #!/bin/bash
 
 ##############################################################################
-# Trading Prediction App - Status Check Script
+# ML Trading Bot - Status Check Script
 # Shows the current status of all services
 ##############################################################################
 
