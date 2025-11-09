@@ -1,0 +1,28 @@
+{
+  "title": "Trading Observability",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Prediction Latency (s)",
+      "targets": [{
+        "expr": "histogram_quantile(0.95, sum(rate(prediction_latency_seconds_bucket[5m])) by (le))",
+        "legendFormat": "p95 latency"
+      }]
+    },
+    {
+      "type": "state-timeline",
+      "title": "Market Regime",
+      "targets": [{
+        "expr": "market_regime_state{symbol=\"TCS.NS\", timeframe=\"5m\"}"
+      }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Prediction Quality",
+      "targets": [{
+        "expr": "prediction_quality_metric{metric=\"mape\"}",
+        "legendFormat": "{{symbol}} {{timeframe}}"
+      }]
+    }
+  ]
+}
