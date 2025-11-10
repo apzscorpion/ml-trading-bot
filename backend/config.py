@@ -16,8 +16,8 @@ class Settings(BaseSettings):
     # WebSocket settings
     ws_heartbeat_interval: int = 30
     
-    # CORS settings
-    allowed_origins: str = "http://localhost:5155,http://localhost:3000,http://192.168.167.178:5155"
+    # CORS settings - Railway/Vercel deployment support
+    allowed_origins: str = "http://localhost:5155,http://localhost:3000,http://192.168.167.178:5155,https://*.railway.app,https://*.vercel.app"
     
     # Market index symbols
     nifty_symbol: str = "^NSEI"
@@ -27,7 +27,8 @@ class Settings(BaseSettings):
     trend_prediction_enabled: bool = True
     market_prediction_enabled: bool = True
     
-    # Redis settings
+    # Redis settings (Railway provides REDIS_URL automatically)
+    redis_url: str = ""  # Railway/Render will set this automatically
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_db: int = 0

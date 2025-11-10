@@ -14,6 +14,11 @@ try:
 except ImportError:
     DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./trading_bot.db")
 
+# Railway/Render sometimes provides postgres:// instead of postgresql://
+# SQLAlchemy 1.4+ requires postgresql://
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
 # For SQLite, resolve relative paths to absolute paths to ensure consistency
 # This ensures migration script and SQLAlchemy use the same database file
 if "sqlite" in DATABASE_URL:
@@ -29,17 +34,34 @@ if "sqlite" in DATABASE_URL:
         db_path = os.path.join(project_root, db_path)
         DATABASE_URL = f"sqlite:///{db_path}"
 
+# Determine if we're using PostgreSQL or SQLite
+IS_POSTGRES = "postgresql" in DATABASE_URL
+IS_SQLITE = "sqlite" in DATABASE_URL
+
 # Create engine with proper connection pooling
-engine = create_engine(
-    DATABASE_URL, 
-    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {},
-    echo=False,  # Set to True for SQL query debugging
-    pool_size=20,  # Increased from default 5
-    max_overflow=40,  # Increased from default 10
-    pool_timeout=60,  # Increased from default 30
-    pool_recycle=3600,  # Recycle connections after 1 hour
-    pool_pre_ping=True  # Verify connections before using them
-)
+# PostgreSQL and SQLite have different optimal settings
+if IS_POSTGRES:
+    engine = create_engine(
+        DATABASE_URL,
+        echo=False,  # Set to True for SQL query debugging
+        pool_size=10,  # Smaller pool for cloud hosting
+        max_overflow=20,
+        pool_timeout=30,
+        pool_recycle=1800,  # 30 minutes for cloud databases
+        pool_pre_ping=True  # Essential for cloud databases
+    )
+else:
+    # SQLite settings
+    engine = create_engine(
+        DATABASE_URL, 
+        connect_args={"check_same_thread": False},
+        echo=False,
+        pool_size=20,
+        max_overflow=40,
+        pool_timeout=60,
+        pool_recycle=3600,
+        pool_pre_ping=True
+    )
 
 # Store the resolved database path for debugging
 RESOLVED_DB_PATH = DATABASE_URL.replace("sqlite:///", "") if "sqlite" in DATABASE_URL else None

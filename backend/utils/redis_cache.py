@@ -24,25 +24,36 @@ class RedisCache:
         
         if self.enabled:
             try:
-                self.client = redis.Redis(
-                    host=settings.redis_host,
-                    port=settings.redis_port,
-                    db=settings.redis_db,
-                    password=settings.redis_password if settings.redis_password else None,
-                    decode_responses=False,  # Keep binary for msgpack
-                    socket_connect_timeout=2,
-                    socket_timeout=2,
-                    retry_on_timeout=True
-                )
+                # Railway/Render provides REDIS_URL, use it if available
+                if settings.redis_url:
+                    self.client = redis.from_url(
+                        settings.redis_url,
+                        decode_responses=False,  # Keep binary for msgpack
+                        socket_connect_timeout=5,
+                        socket_timeout=5,
+                        retry_on_timeout=True
+                    )
+                    logger.info("Redis cache connected via REDIS_URL")
+                else:
+                    # Fallback to individual connection parameters
+                    self.client = redis.Redis(
+                        host=settings.redis_host,
+                        port=settings.redis_port,
+                        db=settings.redis_db,
+                        password=settings.redis_password if settings.redis_password else None,
+                        decode_responses=False,  # Keep binary for msgpack
+                        socket_connect_timeout=2,
+                        socket_timeout=2,
+                        retry_on_timeout=True
+                    )
+                    logger.info("Redis cache connected", redis_host=settings.redis_host, redis_port=settings.redis_port)
+                
                 # Test connection
                 self.client.ping()
-                logger.info("Redis cache connected", redis_host=settings.redis_host, redis_port=settings.redis_port)
             except Exception as e:
                 logger.warning(
                     "Redis connection failed, falling back to in-memory cache",
-                    error=str(e),
-                    redis_host=settings.redis_host,
-                    redis_port=settings.redis_port
+                    error=str(e)
                 )
                 self.client = None
                 self.enabled = False

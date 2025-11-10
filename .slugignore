@@ -1,0 +1,57 @@
+# Files to ignore during Railway/Heroku deployment (reduces slug size)
+
+# Documentation
+*.md
+docs/
+
+# Tests
+tests/
+backend/tests/
+*_test.py
+test_*.py
+
+# Development files
+.git/
+.gitignore
+.vscode/
+.idea/
+
+# Logs
+logs/
+*.log
+
+# Local databases (use PostgreSQL in production)
+*.db
+*.sqlite
+*.sqlite3
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments (not needed in deployment)
+venv/
+env/
+.venv/
+
+# Frontend source (only deploy built dist/)
+frontend/src/
+frontend/node_modules/
+frontend/package*.json
+frontend/vite.config.js
+
+# Large data files
+backend/data/raw/
+backend/data/experiments/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Development scripts
+cleanup*.py
+verify_setup.py
+test_*.py
+
