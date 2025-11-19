@@ -63,8 +63,65 @@ def migrate_database():
                 print("✅ Added trend column to predictions table")
             else:
                 print("✅ trend column already exists in predictions table")
+            
+            # Add prediction_type column
+            if 'prediction_type' not in columns:
+                print("Adding prediction_type column to predictions table...")
+                cursor.execute("ALTER TABLE predictions ADD COLUMN prediction_type VARCHAR(50) DEFAULT 'ensemble'")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_predictions_prediction_type ON predictions(prediction_type)")
+                print("✅ Added prediction_type column to predictions table")
+                
+                # Backfill existing predictions with inferred types
+                print("Backfilling prediction_type for existing predictions...")
+                try:
+                    import json
+                    def determine_prediction_type_from_bot_contributions(bot_contributions):
+                        """Infer prediction type from bot_contributions JSON"""
+                        if not bot_contributions:
+                            return "ensemble"
+                        try:
+                            if isinstance(bot_contributions, str):
+                                bot_contributions = json.loads(bot_contributions)
+                            if not isinstance(bot_contributions, dict):
+                                return "ensemble"
+                            bot_names = set(bot_contributions.keys())
+                            technical_bots = {"rsi_bot", "macd_bot", "ma_bot"}
+                            ml_bots = {"ml_bot", "ensemble_bot"}
+                            dl_bots = {"lstm_bot", "transformer_bot"}
+                            if bot_names.issubset(technical_bots) and len(bot_names) > 0:
+                                return "technical"
+                            if bot_names.issubset(ml_bots) and not bot_names.intersection(dl_bots) and not bot_names.intersection(technical_bots):
+                                return "ml"
+                            if bot_names == {"lstm_bot"}:
+                                return "lstm"
+                            if bot_names == {"transformer_bot"}:
+                                return "transformer"
+                            if bot_names.issubset(dl_bots) and len(bot_names) == 2:
+                                return "deep_learning"
+                            all_bots = technical_bots | ml_bots | dl_bots
+                            if bot_names == all_bots or len(bot_names) >= 5:
+                                return "all"
+                            return "ensemble"
+                        except Exception:
+                            return "ensemble"
+                    
+                    cursor.execute("SELECT id, bot_contributions FROM predictions WHERE prediction_type IS NULL OR prediction_type = 'ensemble'")
+                    rows = cursor.fetchall()
+                    updated_count = 0
+                    for row_id, bot_contributions_json in rows:
+                        pred_type = determine_prediction_type_from_bot_contributions(bot_contributions_json)
+                        cursor.execute(
+                            "UPDATE predictions SET prediction_type = ? WHERE id = ?",
+                            (pred_type, row_id)
+                        )
+                        updated_count += 1
+                    print(f"✅ Backfilled {updated_count} existing predictions with prediction_type")
+                except Exception as e:
+                    print(f"⚠️  Error backfilling prediction_type: {e} (non-fatal)")
+            else:
+                print("✅ prediction_type column already exists in predictions table")
         except Exception as e:
-            print(f"Note: predictions.trend migration skipped (table might not exist yet): {e}")
+            print(f"Note: predictions table migration skipped (table might not exist yet): {e}")
         
         # Migrate backtest_results table - check if it exists and create if needed
         try:

@@ -92,18 +92,32 @@ class FreddyAIServiceManager:
         self.temperature = settings.freddy_temperature
         self.timeout = settings.freddy_timeout
         self.cache_ttl = settings.freddy_cache_ttl
-        self.enabled = settings.freddy_enabled
         
-        if not self.enabled:
-            logger.warning("Freddy AI is disabled in configuration")
+        # Check if Freddy AI is enabled in config
+        config_enabled = settings.freddy_enabled
         
-        if self.enabled:
-            if not self.api_key:
-                logger.warning("Freddy AI API key not configured")
-            if not self.organization_id:
-                logger.warning("Freddy AI organization_id not configured")
-            if not self.assistant_id:
-                logger.warning("Freddy AI assistant_id not configured")
+        # Auto-disable if required API keys are missing
+        if config_enabled:
+            missing_keys = []
+            if not self.api_key or not self.api_key.strip():
+                missing_keys.append("FREDDY_API_KEY")
+            if not self.organization_id or not self.organization_id.strip():
+                missing_keys.append("FREDDY_ORGANIZATION_ID")
+            if not self.assistant_id or not self.assistant_id.strip():
+                missing_keys.append("FREDDY_ASSISTANT_ID")
+            
+            if missing_keys:
+                self.enabled = False
+                logger.warning(
+                    f"Freddy AI is disabled because required configuration is missing: {', '.join(missing_keys)}. "
+                    f"Set these in .env to enable Freddy AI."
+                )
+            else:
+                self.enabled = True
+                logger.info("Freddy AI is enabled and configured")
+        else:
+            self.enabled = False
+            logger.info("Freddy AI is disabled in configuration (FREDDY_ENABLED=false)")
     
     def _get_cache_key(self, symbol: str, analysis_type: str) -> str:
         """Generate cache key for Freddy AI responses"""

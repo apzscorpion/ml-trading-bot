@@ -303,71 +303,31 @@ class EnsembleBot(BaseBot):
             return self._fallback_prediction(candles, horizon_minutes, timeframe)
     
     def _engineer_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Engineer features for ML models"""
-        features = pd.DataFrame()
+        """Engineer comprehensive features for ML models using unified feature engineering"""
+        from backend.utils.feature_engineering import engineer_comprehensive_features
         
-        # Price features
-        features['close'] = df['close']
-        features['high'] = df['high']
-        features['low'] = df['low']
-        features['open'] = df['open']
+        # Use comprehensive feature engineering
+        features_df = engineer_comprehensive_features(
+            df,
+            include_indicators=True,
+            include_volume_features=True,
+            include_price_features=True,
+            include_returns_features=True
+        )
         
-        # Volume
-        features['volume'] = df['volume']
-        features['volume_ma'] = df['volume'].rolling(10).mean()
+        # Ensure we have the core columns for ensemble models
+        core_cols = ['open', 'high', 'low', 'close', 'volume']
+        for col in core_cols:
+            if col not in features_df.columns:
+                features_df[col] = df.get(col, 0)
         
-        # Returns
-        features['returns'] = df['close'].pct_change()
-        features['returns_5'] = df['close'].pct_change(5)
+        # Fill NaN values
+        features_df = features_df.ffill().bfill().fillna(0)
         
-        # Moving averages
-        for period in [5, 10, 20]:
-            features[f'ma_{period}'] = df['close'].rolling(period).mean()
-            # Avoid division by zero - use safe division
-            ma_ratio = features[f'ma_{period}'].replace(0, np.nan)
-            features[f'ma_{period}_ratio'] = df['close'] / ma_ratio
+        # Replace infinite values
+        features_df = features_df.replace([np.inf, -np.inf], 0)
         
-        # Volatility
-        features['volatility_10'] = df['close'].pct_change().rolling(10).std()
-        features['volatility_20'] = df['close'].pct_change().rolling(20).std()
-        
-        # High-Low range
-        features['hl_ratio'] = (df['high'] - df['low']) / df['close'].replace(0, np.nan)
-        
-        # Price momentum
-        features['momentum_5'] = df['close'] - df['close'].shift(5)
-        features['momentum_10'] = df['close'] - df['close'].shift(10)
-        
-        # RSI
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss.replace(0, np.nan)  # Avoid division by zero
-        features['rsi'] = 100 - (100 / (1 + rs))
-        
-        # Bollinger Bands
-        ma_20 = df['close'].rolling(20).mean()
-        std_20 = df['close'].rolling(20).std()
-        features['bb_upper'] = ma_20 + (std_20 * 2)
-        features['bb_lower'] = ma_20 - (std_20 * 2)
-        # Safe division for bb_position
-        bb_range = features['bb_upper'] - features['bb_lower']
-        features['bb_position'] = (df['close'] - features['bb_lower']) / bb_range.replace(0, np.nan)
-        
-        # Fill NaN values and handle inf
-        features = features.bfill().fillna(0)
-        
-        # Replace inf and -inf with finite values
-        features = features.replace([np.inf, -np.inf], np.nan).fillna(0)
-        
-        # Clip extreme values to prevent overflow (clip to reasonable range)
-        # Assuming stock prices are between 0.01 and 1000000
-        for col in features.columns:
-            if features[col].dtype in [np.float64, np.float32]:
-                # Clip to reasonable range for stock prices
-                features[col] = features[col].clip(-1e6, 1e6)
-        
-        return features
+        return features_df
     
     def _fallback_prediction(self, candles: List[Dict], horizon_minutes: int, timeframe: str) -> Dict:
         """Fallback prediction using statistical analysis"""

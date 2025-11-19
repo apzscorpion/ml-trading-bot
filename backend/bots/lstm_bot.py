@@ -120,7 +120,9 @@ class LSTMBot(BaseBot):
             return
         
         # Model architecture - use Input layer instead of input_shape parameter
-        inputs = layers.Input(shape=(self.sequence_length, 5))
+        # Updated to handle more features (will be determined dynamically during training)
+        # Default to 15 features (OHLCV + 10 key indicators)
+        inputs = layers.Input(shape=(self.sequence_length, 15))
         x = layers.LSTM(128, return_sequences=True)(inputs)
         x = layers.Dropout(0.2)(x)
         x = layers.LSTM(64, return_sequences=True)(x)
@@ -262,15 +264,37 @@ class LSTMBot(BaseBot):
             return self._fallback_prediction(candles, horizon_minutes, timeframe)
     
     def _prepare_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Prepare features for LSTM model"""
-        features = pd.DataFrame()
-        features['open'] = df['open']
-        features['high'] = df['high']
-        features['low'] = df['low']
-        features['close'] = df['close']
-        features['volume'] = df['volume']
+        """Prepare comprehensive features for LSTM model"""
+        from backend.utils.feature_engineering import engineer_comprehensive_features
         
-        return features.dropna()
+        # Use comprehensive feature engineering
+        features_df = engineer_comprehensive_features(
+            df,
+            include_indicators=True,
+            include_volume_features=True,
+            include_price_features=True,
+            include_returns_features=True
+        )
+        
+        # Select key features for LSTM (reduce dimensionality while keeping important signals)
+        # LSTM can handle sequences, so we include the most important features
+        key_features = [
+            'open', 'high', 'low', 'close', 'volume',
+            'rsi_14', 'macd', 'macd_signal', 'macd_histogram',
+            'stoch_rsi_k', 'stoch_rsi_d',
+            'bb_position', 'atr_14',
+            'volume_ratio_20', 'obv_ratio', 'mfi_14',
+            'momentum_10', 'volatility_10', 'returns_5'
+        ]
+        
+        # Only include columns that exist
+        available_features = [col for col in key_features if col in features_df.columns]
+        
+        if len(available_features) < 5:
+            # Fallback to basic OHLCV if feature engineering failed
+            return df[['open', 'high', 'low', 'close', 'volume']].dropna()
+        
+        return features_df[available_features].dropna()
     
     def _fallback_prediction(self, candles: List[Dict], horizon_minutes: int, timeframe: str) -> Dict:
         """Fallback prediction using simple trend analysis"""

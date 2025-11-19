@@ -38,7 +38,8 @@ class Settings(BaseSettings):
     
     # Cache settings
     dataset_version: str = "v1"  # Version for cache keys
-    data_root: str = "data"  # Base directory for data pipeline artifacts
+    data_root: str = "data"  # Base directory for data pipeline artifacts (can be absolute path for external storage)
+    model_storage_path: str = "models"  # Directory for storing trained models (can be absolute path for external storage)
     
     # Prediction settings
     default_horizon_minutes: int = 180  # 3 hours

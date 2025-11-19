@@ -1,8 +1,7 @@
-/**
- * API service for REST endpoints
- */
+// API service for making HTTP requests to the backend
 import axios from 'axios'
 
+// Use relative path so it works in all environments
 const API_BASE = '/api'
 
 export const api = {
@@ -10,159 +9,105 @@ export const api = {
    * Fetch historical candles
    */
   async fetchHistory(symbol, timeframe, limit = 500, to_ts = null, from_ts = null, bypass_cache = false) {
+    const params = {
+      symbol,
+      timeframe,
+      limit
+    }
+    if (to_ts) params.to_ts = to_ts
+    if (from_ts) params.from_ts = from_ts
+    if (bypass_cache) params.bypass_cache = true
+
     try {
-      const params = { symbol, timeframe, limit }
-      if (to_ts) params.to_ts = to_ts
-      if (from_ts) params.from_ts = from_ts
-      if (bypass_cache) params.bypass_cache = true  // Add bypass_cache parameter
-      
-      console.log('🌐 API Call: fetchHistory', params)
-      
-      const response = await axios.get(`${API_BASE}/history`, {
-        params
-      })
-      
-      console.log('✅ API Response: fetchHistory', { 
-        count: response.data?.length || 0,
-        symbol,
-        timeframe,
-        hasData: !!response.data
-      })
-      
+      const response = await axios.get(`${API_BASE}/history`, { params })
       return response.data
     } catch (error) {
-      console.error('❌ Error fetching history:', error)
-      return []
+      console.error('Error fetching history:', error)
+      throw error
     }
   },
 
   /**
-   * Get latest candle for a symbol (for watchlist prices)
+   * Fetch prediction
    */
-  async fetchLatestCandle(symbol, timeframe = '5m') {
+  async fetchPrediction(symbol, timeframe = '5m', horizonMinutes = 180) {
     try {
-      const response = await axios.get(`${API_BASE}/history/latest`, {
-        params: { symbol, timeframe }
-      })
-      return response.data
-    } catch (error) {
-      console.error(`Error fetching latest candle for ${symbol}:`, error)
-      return null
-    }
-  },
-
-  /**
-   * Get latest prediction
-   */
-  async fetchLatestPrediction(symbol, timeframe) {
-    try {
-      const response = await axios.get(`${API_BASE}/prediction/latest`, {
-        params: { symbol, timeframe }
+      const response = await axios.get(`${API_BASE}/prediction`, {
+        params: {
+          symbol,
+          timeframe,
+          horizon_minutes: horizonMinutes
+        }
       })
       return response.data
     } catch (error) {
       console.error('Error fetching prediction:', error)
-      return null
+      throw error
     }
   },
 
   /**
-   * Trigger new prediction
+   * Trigger prediction
    */
-  async triggerPrediction(symbol, timeframe, horizonMinutes = 180, selectedBots = null) {
+  async triggerPrediction(symbol, timeframe = '5m', horizonMinutes = 180) {
     try {
-      const payload = {
+      const response = await axios.post(`${API_BASE}/prediction/trigger`, {
         symbol,
         timeframe,
         horizon_minutes: horizonMinutes
-      }
-      if (selectedBots) {
-        payload.selected_bots = selectedBots
-      }
-      const response = await axios.post(`${API_BASE}/prediction/trigger`, payload)
-      return response.data
-    } catch (error) {
-      console.error('Error triggering prediction:', error)
-      return null
-    }
-  },
-
-  /**
-   * Get prediction history
-   */
-  async fetchPredictionHistory(symbol, timeframe, limit = 50) {
-    try {
-      const response = await axios.get(`${API_BASE}/prediction/history/all`, {
-        params: { symbol, timeframe, limit }
       })
       return response.data
     } catch (error) {
-      console.error('Error fetching prediction history:', error)
-      return []
+      console.error('Error triggering prediction:', error)
+      throw error
     }
   },
 
   /**
-   * Get bot performance metrics
+   * Fetch recommendation
    */
-  async fetchBotPerformance(symbol = null, days = 7) {
+  async fetchRecommendation(symbol, timeframe = '5m') {
     try {
-      const params = { days }
-      if (symbol) params.symbol = symbol
-      
-      const response = await axios.get(`${API_BASE}/evaluation/bot-performance`, { params })
-      return response.data
-    } catch (error) {
-      console.error('Error fetching bot performance:', error)
-      return null
-    }
-  },
-
-  /**
-   * Get available symbols
-   */
-  async fetchSymbols() {
-    try {
-      const response = await axios.get(`${API_BASE}/history/symbols`)
-      return response.data.symbols || []
-    } catch (error) {
-      console.error('Error fetching symbols:', error)
-      return []
-    }
-  },
-
-  /**
-   * Get metrics summary
-   */
-  async fetchMetricsSummary(symbol, timeframe) {
-    try {
-      const response = await axios.get(`${API_BASE}/evaluation/metrics/summary`, {
+      const response = await axios.get(`${API_BASE}/recommendation`, {
         params: { symbol, timeframe }
       })
       return response.data
     } catch (error) {
-      console.error('Error fetching metrics:', error)
-      return null
+      console.error('Error fetching recommendation:', error)
+      throw error
     }
   },
 
   /**
-   * Get available bots
+   * Fetch market indices (Nifty50 and Sensex)
    */
-  async fetchAvailableBots() {
+  async fetchMarketIndices() {
     try {
-      const response = await axios.get(`${API_BASE}/prediction/bots/available`)
+      const response = await axios.get(`${API_BASE}/market/indices`)
       return response.data
     } catch (error) {
-      console.error('Error fetching available bots:', error)
-      return null
+      console.error('Error fetching market indices:', error)
+      throw error
     }
   },
 
   /**
-   * Train a bot (returns immediately with training_id, progress via WebSocket)
+   * Fetch market status
    */
-  async trainBot(symbol, timeframe, botName, epochs = 50, batchSize = 200) {
+  async fetchMarketStatus() {
+    try {
+      const response = await axios.get(`${API_BASE}/market/status`)
+      return response.data
+    } catch (error) {
+      console.error('Error fetching market status:', error)
+      throw error
+    }
+  },
+
+  /**
+   * Train a specific bot
+   */
+  async trainBot(symbol, timeframe, botName, epochs = 50, batchSize = 32) {
     try {
       const response = await axios.post(`${API_BASE}/prediction/train`, {
         symbol,
@@ -174,215 +119,69 @@ export const api = {
       return response.data
     } catch (error) {
       console.error('Error training bot:', error)
-      // Add notification if notification center is available
-      if (window.notificationCenter) {
-        const errorDetails = {
-          message: error.message,
-          status: error.response?.status,
-          statusText: error.response?.statusText,
-          data: error.response?.data,
-          config: {
-            url: error.config?.url,
-            method: error.config?.method,
-            data: error.config?.data
-          }
-        }
-        window.notificationCenter.addError(
-          `Training failed for ${botName}: ${error.response?.data?.detail || error.message}`,
-          errorDetails,
-          `POST ${API_BASE}/prediction/train (${botName})`
-        )
-      }
-      // Return error response data if available, otherwise null
-      if (error.response?.data) {
-        return { ...error.response.data, error: true }
-      }
-      return null
+      throw error
     }
   },
 
   /**
-   * Get trading recommendation analysis
+   * Get bot status
    */
-  async fetchTradingRecommendation(symbol, timeframe) {
+  async getBotStatus(botName) {
+    try {
+      const response = await axios.get(`${API_BASE}/models/status/${botName}`)
+      return response.data
+    } catch (error) {
+      console.error('Error fetching bot status:', error)
+      throw error
+    }
+  },
+
+  /**
+   * Retrain all bots
+   */
+  async retrainAllBots(symbol, timeframe) {
+    try {
+      const response = await axios.post(`${API_BASE}/models/retrain-all`, {
+        symbol,
+        timeframe
+      })
+      return response.data
+    } catch (error) {
+      console.error('Error retraining all bots:', error)
+      throw error
+    }
+  },
+
+  /**
+   * Clear bot models
+   */
+  async clearBotModels(botName) {
+    try {
+      const response = await axios.delete(`${API_BASE}/models/${botName}`)
+      return response.data
+    } catch (error) {
+      console.error('Error clearing bot models:', error)
+      throw error
+    }
+  },
+
+  /**
+   * Get technical analysis
+   */
+  async getTechnicalAnalysis(symbol, timeframe = '5m') {
     try {
       const response = await axios.get(`${API_BASE}/recommendation/analysis`, {
-        params: { symbol, timeframe }
+        params: { symbol, timeframe, mode: 'ta_only' }
       })
       return response.data
     } catch (error) {
-      console.error('Error fetching trading recommendation:', error)
-      return null
-    }
-  },
-
-  /**
-   * Clear data cache to force fresh data fetch
-   */
-  async clearCache() {
-    try {
-      const response = await axios.post(`${API_BASE}/debug/clear-cache`)
-      return response.data
-    } catch (error) {
-      console.error('Error clearing cache:', error)
-      return null
-    }
-  },
-
-  /**
-   * Get debug info about latest data
-   */
-  async getDebugInfo(symbol, timeframe) {
-    try {
-      const response = await axios.get(`${API_BASE}/debug/latest-data`, {
-        params: { symbol, timeframe }
-      })
-      return response.data
-    } catch (error) {
-      console.error('Error fetching debug info:', error)
-      return null
-    }
-  },
-
-  /**
-   * Model Management APIs
-   */
-  async getModelsReport() {
-    try {
-      const response = await axios.get(`${API_BASE}/models/report`, {
-        timeout: 30000 // 30 second timeout - increased for large datasets
-      })
-      return response.data
-    } catch (error) {
-      console.error('Error fetching models report:', error)
-      return null
-    }
-  },
-
-  async getTrainingStatus() {
-    try {
-      const response = await axios.get(`${API_BASE}/training/status`, {
-        timeout: 15000 // 15 second timeout - increased for reliability
-      })
-      return response.data
-    } catch (error) {
-      console.error('Error fetching training status:', error)
-      return {
-        is_running: false,
-        is_paused: false,
-        current_training: null,
-        queue_length: 0,
-        completed_count: 0,
-        failed_count: 0
-      }
-    }
-  },
-
-  async startAutoTraining(symbols, timeframes, bots) {
-    try {
-      // Note: This endpoint returns immediately after queuing the background training tasks.
-      // The actual training happens asynchronously in the background.
-      // No timeout - endpoint returns immediately after queuing
-      const response = await axios.post(`${API_BASE}/training/start-auto`, {
-        symbols,
-        timeframes,
-        bots
-      })
-      return response.data
-    } catch (error) {
-      console.error('Error starting auto training:', error)
-      throw error
-    }
-  },
-
-  async pauseTraining() {
-    try {
-      const response = await axios.post(`${API_BASE}/training/pause`)
-      return response.data
-    } catch (error) {
-      console.error('Error pausing training:', error)
-      throw error
-    }
-  },
-
-  async resumeTraining() {
-    try {
-      const response = await axios.post(`${API_BASE}/training/resume`)
-      return response.data
-    } catch (error) {
-      console.error('Error resuming training:', error)
-      throw error
-    }
-  },
-
-  async clearModelsForTimeframe(symbol, timeframe) {
-    try {
-      const response = await axios.delete(`${API_BASE}/models/clear-all/${symbol}/${timeframe}`)
-      return response.data
-    } catch (error) {
-      console.error('Error clearing models for timeframe:', error)
-      throw error
-    }
-  },
-
-  async stopTraining() {
-    try {
-      const response = await axios.post(`${API_BASE}/training/stop`)
-      return response.data
-    } catch (error) {
-      console.error('Error stopping training:', error)
-      throw error
-    }
-  },
-
-  async forceStopTraining() {
-    try {
-      const response = await axios.post(`${API_BASE}/training/force-stop`)
-      return response.data
-    } catch (error) {
-      console.error('Error force stopping training:', error)
-      throw error
-    }
-  },
-
-  async clearModel(symbol, timeframe, botName) {
-    try {
-      const response = await axios.delete(
-        `${API_BASE}/models/clear/${symbol}/${timeframe}/${botName}`
-      )
-      return response.data
-    } catch (error) {
-      console.error('Error clearing model:', error)
-      throw error
-    }
-  },
-
-  async clearAllModelsForSymbol(symbol) {
-    try {
-      console.log(`🗑️ API: Clearing all models for ${symbol}`)
-      const response = await axios.delete(
-        `${API_BASE}/models/clear-all/${symbol}`,
-        {
-          timeout: 30000 // 30 second timeout
-        }
-      )
-      console.log(`✅ API: Clear models response:`, response.data)
-      return response.data
-    } catch (error) {
-      console.error('❌ API Error clearing all models for symbol:', {
-        symbol,
-        message: error.message,
-        response: error.response?.data,
-        status: error.response?.status,
-        statusText: error.response?.statusText,
-        url: error.config?.url
-      })
+      console.error('Error fetching technical analysis:', error)
       throw error
     }
   },
 
   /**
-   * Get comprehensive intraday prediction using all models, indicators, and patterns
+   * Get comprehensive intraday prediction
    */
   async fetchComprehensivePrediction(symbol, timeframe = '5m', horizonMinutes = 180) {
     try {
@@ -429,15 +228,317 @@ export const api = {
       
       // Check if Freddy AI is disabled (503) or not configured (502)
       if (error.response?.status === 503 || error.response?.status === 502) {
+        // Extract error detail from backend response, or use default message
+        const errorDetail = error.response?.data?.detail || 
+          'Freddy AI is not configured. Set FREDDY_API_KEY, FREDDY_ORGANIZATION_ID, and FREDDY_ASSISTANT_ID in .env to enable.'
+        
         return {
           error: 'freddy_disabled',
-          message: 'Freddy AI is not configured. Set FREDDY_API_KEY, FREDDY_ORGANIZATION_ID, and FREDDY_ASSISTANT_ID in .env to enable.',
+          message: errorDetail,
           analysis: null
         }
       }
       
       throw error
     }
+  },
+
+  /**
+   * Trigger AI-powered training for a symbol (NEW!)
+   */
+  async triggerAITraining(symbol, timeframe = '5m', options = {}) {
+    try {
+      const payload = {
+        symbol,
+        timeframe,
+        lookback_days: options.lookbackDays || 30,
+        sample_points: options.samplePoints || 100,
+        bot_names: options.botNames || ['lstm_bot', 'transformer_bot', 'ensemble_bot'],
+        use_for_training: options.useForTraining !== false
+      }
+
+      const response = await axios.post(`${API_BASE}/ai-training/generate-dataset`, payload)
+      return response.data
+    } catch (error) {
+      console.error('Error triggering AI training:', error)
+      throw error
+    }
+  },
+
+  /**
+   * Trigger AI training for currently active symbol (quick training)
+   */
+  async triggerAITrainingForActiveSymbol(symbol, timeframe = '5m') {
+    try {
+      const response = await axios.post(`${API_BASE}/ai-training/trigger-for-active-symbol`, null, {
+        params: { symbol, timeframe }
+      })
+      return response.data
+    } catch (error) {
+      console.error('Error triggering AI training for active symbol:', error)
+      throw error
+    }
+  },
+
+  /**
+   * Get training status (for regular bot training)
+   */
+  async getTrainingStatus() {
+    try {
+      const response = await axios.get(`${API_BASE}/training/status`)
+      return response.data
+    } catch (error) {
+      console.error('Error fetching training status:', error)
+      throw error
+    }
+  },
+
+  /**
+   * Get AI training status
+   */
+  async getAITrainingStatus() {
+    try {
+      const response = await axios.get(`${API_BASE}/ai-training/status`)
+      return response.data
+    } catch (error) {
+      console.error('Error fetching AI training status:', error)
+      throw error
+    }
+  },
+
+  /**
+   * Get models report
+   */
+  async getModelsReport(limit = 1000) {
+    try {
+      const response = await axios.get(`${API_BASE}/models/report`, {
+        params: { limit }
+      })
+      return response.data
+    } catch (error) {
+      console.error('Error fetching models report:', error)
+      throw error
+    }
+  },
+
+  /**
+   * Fetch latest prediction for a symbol
+   */
+  /**
+   * Fetch prediction history
+   */
+  async fetchPredictionHistory(symbol, timeframe = '5m', limit = 50, predictionType = null) {
+    try {
+      const params = {
+        symbol,
+        timeframe,
+        limit
+      }
+      if (predictionType) {
+        params.prediction_type = predictionType
+      }
+      const response = await axios.get(`${API_BASE}/prediction/history/all`, { params })
+      return response.data
+    } catch (error) {
+      console.error('Error fetching prediction history:', error)
+      throw error
+    }
+  },
+
+  /**
+   * Fetch prediction history grouped by type
+   */
+  async fetchPredictionHistoryByType(symbol, timeframe = '5m', limitPerType = 10) {
+    try {
+      const response = await axios.get(`${API_BASE}/prediction/history/by-type`, {
+        params: {
+          symbol,
+          timeframe,
+          limit_per_type: limitPerType
+        }
+      })
+      return response.data
+    } catch (error) {
+      console.error('Error fetching prediction history by type:', error)
+      throw error
+    }
+  },
+
+  async fetchLatestPrediction(symbol, timeframe = '5m') {
+    try {
+      const response = await axios.get(`${API_BASE}/prediction/latest`, {
+        params: { symbol, timeframe }
+      })
+      return response.data
+    } catch (error) {
+      console.error('Error fetching latest prediction:', error)
+      throw error
+    }
+  },
+
+  /**
+   * Fetch metrics summary
+   */
+  async fetchMetricsSummary(symbol, timeframe = '5m') {
+    try {
+      const response = await axios.get(`${API_BASE}/evaluation/metrics/summary`, {
+        params: { symbol, timeframe }
+      })
+      return response.data
+    } catch (error) {
+      console.error('Error fetching metrics summary:', error)
+      throw error
+    }
+  },
+
+  /**
+   * Fetch latest candle for a symbol
+   */
+  async fetchLatestCandle(symbol, timeframe = '5m') {
+    try {
+      const response = await axios.get(`${API_BASE}/history/latest`, {
+        params: { symbol, timeframe }
+      })
+      return response.data
+    } catch (error) {
+      console.error('Error fetching latest candle:', error)
+      throw error
+    }
+  },
+
+  /**
+   * Fetch trading recommendation
+   */
+  async fetchTradingRecommendation(symbol, timeframe = '5m', mode = 'combined') {
+    try {
+      const response = await axios.get(`${API_BASE}/recommendation/analysis`, {
+        params: { symbol, timeframe, mode }
+      })
+      return response.data
+    } catch (error) {
+      console.error('Error fetching trading recommendation:', error)
+      throw error
+    }
+  },
+
+  /**
+   * Start auto training for multiple symbol/timeframe/bot combinations
+   */
+  async startAutoTraining(symbols, timeframes, bots) {
+    try {
+      const response = await axios.post(`${API_BASE}/training/start-auto`, {
+        symbols,
+        timeframes,
+        bots
+      })
+      return response.data
+    } catch (error) {
+      console.error('Error starting auto training:', error)
+      throw error
+    }
+  },
+
+  /**
+   * Pause training
+   */
+  async pauseTraining() {
+    try {
+      const response = await axios.post(`${API_BASE}/training/pause`)
+      return response.data
+    } catch (error) {
+      console.error('Error pausing training:', error)
+      throw error
+    }
+  },
+
+  /**
+   * Resume training
+   */
+  async resumeTraining() {
+    try {
+      const response = await axios.post(`${API_BASE}/training/resume`)
+      return response.data
+    } catch (error) {
+      console.error('Error resuming training:', error)
+      throw error
+    }
+  },
+
+  /**
+   * Stop training (stops after current task)
+   */
+  async stopTraining() {
+    try {
+      const response = await axios.post(`${API_BASE}/training/stop`)
+      return response.data
+    } catch (error) {
+      console.error('Error stopping training:', error)
+      throw error
+    }
+  },
+
+  /**
+   * Force stop training (immediately)
+   */
+  async forceStopTraining() {
+    try {
+      const response = await axios.post(`${API_BASE}/training/force-stop`)
+      return response.data
+    } catch (error) {
+      console.error('Error force stopping training:', error)
+      throw error
+    }
+  },
+
+  /**
+   * Clear a specific model
+   */
+  async clearModel(symbol, timeframe, botName) {
+    try {
+      const response = await axios.delete(`${API_BASE}/models/clear/${symbol}/${timeframe}/${botName}`)
+      return response.data
+    } catch (error) {
+      console.error('Error clearing model:', error)
+      throw error
+    }
+  },
+
+  /**
+   * Clear all models for a symbol across all timeframes
+   */
+  async clearAllModelsForSymbol(symbol) {
+    try {
+      const response = await axios.delete(`${API_BASE}/models/clear-all/${symbol}`)
+      return response.data
+    } catch (error) {
+      console.error('Error clearing all models for symbol:', error)
+      throw error
+    }
+  },
+
+  /**
+   * Clear all models for a symbol and timeframe
+   */
+  async clearModelsForTimeframe(symbol, timeframe) {
+    try {
+      const response = await axios.delete(`${API_BASE}/models/clear-all/${symbol}/${timeframe}`)
+      return response.data
+    } catch (error) {
+      console.error('Error clearing models for timeframe:', error)
+      throw error
+    }
+  },
+
+  /**
+   * Clear cache (both Redis and in-memory)
+   */
+  async clearCache() {
+    try {
+      const response = await axios.post(`${API_BASE}/debug/clear-cache`)
+      return response.data
+    } catch (error) {
+      console.error('Error clearing cache:', error)
+      throw error
+    }
   }
 }
-

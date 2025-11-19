@@ -121,6 +121,9 @@ class Prediction(Base):
     validation_flags = Column(JSON)  # Was sanitized? clipped? rejected?
     feature_snapshot = Column(JSON)  # Key indicator values at prediction time
     
+    # Prediction type tracking: "technical", "ml", "lstm", "transformer", "ensemble", "all"
+    prediction_type = Column(String, index=True, default="ensemble")
+    
     created_at = Column(DateTime, default=datetime.utcnow)
     
     def to_dict(self):
@@ -136,7 +139,8 @@ class Prediction(Base):
             "trend": self.trend if hasattr(self, 'trend') else None,
             "bot_raw_outputs": self.bot_raw_outputs if hasattr(self, 'bot_raw_outputs') else None,
             "validation_flags": self.validation_flags if hasattr(self, 'validation_flags') else None,
-            "feature_snapshot": self.feature_snapshot if hasattr(self, 'feature_snapshot') else None
+            "feature_snapshot": self.feature_snapshot if hasattr(self, 'feature_snapshot') else None,
+            "prediction_type": self.prediction_type if hasattr(self, 'prediction_type') else "ensemble"
         }
 
 

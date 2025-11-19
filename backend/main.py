@@ -17,7 +17,7 @@ from typing import Dict, Set
 from datetime import datetime, timedelta
 
 from backend.database import init_db, SessionLocal, Candle
-from backend.routes import history, prediction, evaluation, recommendation, debug, models, training, market, intraday, freddy, versioning
+from backend.routes import history, prediction, evaluation, recommendation, debug, models, training, market, intraday, freddy, versioning, ai_training
 from backend.utils.data_fetcher import data_fetcher
 from backend.freddy_merger import freddy_merger
 from backend.config import settings
@@ -216,20 +216,30 @@ _MIN_FETCH_INTERVAL = timedelta(seconds=5)  # Minimum 5 seconds between API call
 
 async def scheduled_realtime_candle_updates():
     """
-    Real-time candle updates - runs every 1 second
+    Real-time candle updates - runs every 5 seconds
     to broadcast live candle updates to all subscribed clients.
-    This provides TradingView-like real-time updates with 1-second granularity.
+    This provides TradingView-like real-time updates.
     
-    Uses rate limiting to prevent API overload - only fetches from API every 5 seconds,
-    but broadcasts cached updates every second for smooth real-time feel.
+    Uses rate limiting to prevent API overload and checks market hours
+    to avoid unnecessary API calls when market is closed.
     """
+    # Quick check: if no active connections, skip entirely (performance optimization)
+    if not manager.active_connections:
+        return
+    
+    # Check if market is open (avoid API calls during non-trading hours)
+    if not exchange_calendar.is_market_open():
+        # Market is closed, skip data fetch
+        return
+    
+    # Get all active subscriptions
+    subscriptions = manager.get_all_subscriptions()
+    
+    if not subscriptions:
+        return  # No active subscriptions
+    
     db = SessionLocal()
     try:
-        # Get all active subscriptions
-        subscriptions = manager.get_all_subscriptions()
-        
-        if not subscriptions:
-            return  # No active subscriptions
         
         # Fetch updates for each subscribed symbol/timeframe
         for subscription in subscriptions:
@@ -285,7 +295,6 @@ async def scheduled_realtime_candle_updates():
                         **candle_dict
                     )
                     db.add(candle)
-                    db.commit()
                 else:
                     # Update existing candle (live update)
                     existing.open = candle_dict.get('open', existing.open)
@@ -293,7 +302,6 @@ async def scheduled_realtime_candle_updates():
                     existing.low = min(existing.low, candle_dict.get('low', existing.low))
                     existing.close = candle_dict.get('close', existing.close)
                     existing.volume = candle_dict.get('volume', existing.volume)
-                    db.commit()
                 
                 # Broadcast candle update to subscribed clients
                 await manager.broadcast_candle(symbol, timeframe, latest_candle)
@@ -308,6 +316,9 @@ async def scheduled_realtime_candle_updates():
                 )
                 continue
         
+        # Commit all DB changes at once (batch commit is more efficient)
+        db.commit()
+        
     except Exception as e:
         logger.error(
             "Error in real-time candle update task",
@@ -315,6 +326,7 @@ async def scheduled_realtime_candle_updates():
             error_type=type(e).__name__,
             exc_info=True
         )
+        db.rollback()
     finally:
         db.close()
 
@@ -389,8 +401,9 @@ async def lifespan(app: FastAPI):
         id="realtime_candle_updates",
         name="Real-time candle updates",
         replace_existing=True,
-        max_instances=1,  # Only allow one instance at a time
-        coalesce=True  # Combine multiple pending executions into one
+        max_instances=3,  # Allow up to 3 concurrent instances to handle slow API responses
+        coalesce=True,  # Combine multiple pending executions into one
+        misfire_grace_time=10  # Allow 10 second delay before considering it a misfire
     )
     
     # Schedule automatic training at 9:00 AM IST daily
@@ -474,6 +487,7 @@ app.include_router(market.router)
 app.include_router(intraday.router)
 app.include_router(freddy.router)
 app.include_router(versioning.router)
+app.include_router(ai_training.router)
 
 # Market status router
 from backend.routes import market_status

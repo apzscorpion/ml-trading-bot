@@ -8,6 +8,8 @@ import numpy as np
 from datetime import datetime, timedelta
 import pytz
 import os
+from pathlib import Path
+from backend.config import settings
 
 
 class BaseBot(ABC):
@@ -33,25 +35,38 @@ class BaseBot(ABC):
     def get_model_path(self, base_path: str) -> str:
         """
         Generate model path with symbol and timeframe suffix.
+        Supports external storage via MODEL_STORAGE_PATH config.
         
         Args:
-            base_path: Base model path (e.g., 'models/lstm_model.keras')
+            base_path: Base model path (e.g., 'models/lstm_model.keras' or 'lstm_model.keras')
         
         Returns:
-            Path with symbol and timeframe (e.g., 'models/lstm_model_TCS_NS_5m.keras')
+            Path with symbol and timeframe (e.g., '/external/models/lstm_model_TCS_NS_5m.keras')
         """
+        # Resolve model storage base path from config
+        model_base = Path(settings.model_storage_path).expanduser().resolve()
+        
+        # If base_path already contains a directory, extract just the filename
+        # Otherwise use base_path as filename
+        if os.path.dirname(base_path):
+            # Extract filename from path like "models/lstm_model.keras"
+            filename = os.path.basename(base_path)
+        else:
+            # Already just a filename like "lstm_model.keras"
+            filename = base_path
+        
         if self._current_symbol and self._current_timeframe:
             # Sanitize symbol for filename (replace . with _)
             safe_symbol = self._current_symbol.replace('.', '_')
-            # Get directory and filename
-            directory = os.path.dirname(base_path)
-            filename = os.path.basename(base_path)
             # Split filename and extension
             name, ext = os.path.splitext(filename)
-            # Create new path
+            # Create new filename with symbol and timeframe
             new_filename = f"{name}_{safe_symbol}_{self._current_timeframe}{ext}"
-            return os.path.join(directory, new_filename) if directory else new_filename
-        return base_path
+            # Return full path using configured model storage path
+            return str(model_base / new_filename)
+        
+        # Return full path without symbol/timeframe suffix
+        return str(model_base / filename)
     
     @abstractmethod
     async def predict(

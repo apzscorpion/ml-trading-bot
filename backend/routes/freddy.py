@@ -144,7 +144,23 @@ async def run_custom_prompt(
     """Invoke Freddy AI with a custom user prompt and live indicator context."""
 
     if not freddy_ai_service.enabled:
-        raise HTTPException(status_code=503, detail="Freddy AI integration is disabled")
+        # Check if it's disabled due to missing configuration
+        missing_config = []
+        if not freddy_ai_service.api_key or not freddy_ai_service.api_key.strip():
+            missing_config.append("FREDDY_API_KEY")
+        if not freddy_ai_service.organization_id or not freddy_ai_service.organization_id.strip():
+            missing_config.append("FREDDY_ORGANIZATION_ID")
+        if not freddy_ai_service.assistant_id or not freddy_ai_service.assistant_id.strip():
+            missing_config.append("FREDDY_ASSISTANT_ID")
+        
+        if missing_config:
+            detail = (
+                f"Freddy AI is not configured. Set {', '.join(missing_config)} in .env to enable."
+            )
+        else:
+            detail = "Freddy AI integration is disabled"
+        
+        raise HTTPException(status_code=503, detail=detail)
 
     candles = await _load_candles(db, request.symbol, request.timeframe)
 
@@ -179,7 +195,22 @@ async def run_custom_prompt(
     )
 
     if not analysis:
-        raise HTTPException(status_code=502, detail="Freddy AI did not return a response")
+        # Check if it's a configuration issue
+        missing_config = []
+        if not freddy_ai_service.api_key or not freddy_ai_service.api_key.strip():
+            missing_config.append("FREDDY_API_KEY")
+        if not freddy_ai_service.organization_id or not freddy_ai_service.organization_id.strip():
+            missing_config.append("FREDDY_ORGANIZATION_ID")
+        if not freddy_ai_service.assistant_id or not freddy_ai_service.assistant_id.strip():
+            missing_config.append("FREDDY_ASSISTANT_ID")
+        
+        if missing_config:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Freddy AI is not configured. Set {', '.join(missing_config)} in .env to enable."
+            )
+        else:
+            raise HTTPException(status_code=502, detail="Freddy AI did not return a response")
 
     analysis_dict = analysis.dict()
 

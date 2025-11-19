@@ -167,6 +167,18 @@
               {{ isClearingAll ? "⏳ Clearing..." : "🗑️ Clear All Models" }}
             </button>
           </div>
+
+          <div class="model-group">
+            <h4>Prediction History</h4>
+            <button
+              class="btn-model"
+              :class="{ 'btn-history-active': showPredictionHistory }"
+              @click="togglePredictionHistory"
+              title="Show/hide historical predictions by type"
+            >
+              {{ showPredictionHistory ? "👁️ Hide History" : "📜 Show History" }}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -177,6 +189,9 @@
         :predictions="predictions"
         :historical-predictions="historicalPredictions"
         :loading="isLoading || isLoadingSymbol"
+        :timeframe="selectedTimeframe"
+        :prediction-history="predictionHistory"
+        :show-prediction-history="showPredictionHistory"
         @loadMoreHistory="loadMoreHistory"
         @loadNewerHistory="loadNewerHistory"
       />
@@ -335,6 +350,19 @@ const metricsSummary = ref(null);
 
 const stockInfo = ref(null);
 
+// Prediction history state
+const showPredictionHistory = ref(false);
+const predictionHistory = ref([]);
+
+// Computed property for latest price from candles
+const latestPrice = computed(() => {
+  if (candles.value && candles.value.length > 0) {
+    const latest = candles.value[candles.value.length - 1];
+    return latest.close ? parseFloat(latest.close) : null;
+  }
+  return null;
+});
+
 const availableSymbols = ref([
   "TCS.NS",
   "RELIANCE.NS",
@@ -386,6 +414,28 @@ const formatBotName = (name) => {
 // Methods
 const loadHistory = async (forceRefresh = false) => {
   isLoading.value = true;
+  
+  // 🤖 AI-POWERED TRAINING: Trigger training for active symbol (non-blocking)
+  if (forceRefresh) {
+    try {
+      console.log(`🤖 Triggering AI training for ${selectedSymbol.value}/${selectedTimeframe.value}`);
+      api.triggerAITrainingForActiveSymbol(selectedSymbol.value, selectedTimeframe.value)
+        .then(response => {
+          if (response.status === 'started') {
+            console.log(`✅ AI training started: ${response.message}`);
+          } else if (response.status === 'skipped') {
+            console.log(`⏭️ AI training skipped: ${response.message}`);
+          }
+        })
+        .catch(err => {
+          console.warn('AI training trigger failed (non-critical):', err.message);
+        });
+    } catch (err) {
+      // Non-blocking: don't fail if AI training fails
+      console.warn('AI training not available:', err);
+    }
+  }
+  
   try {
     console.log(
       `📥 Fetching history: ${selectedSymbol.value} ${selectedTimeframe.value}${
@@ -786,8 +836,38 @@ const loadMetricsSummary = async () => {
   }
 };
 
+const loadPredictionHistory = async () => {
+  try {
+    console.log("Loading prediction history for:", selectedSymbol.value, selectedTimeframe.value);
+    const data = await api.fetchPredictionHistoryByType(
+      selectedSymbol.value,
+      selectedTimeframe.value,
+      10 // limit per type
+    );
+    
+    if (data && typeof data === 'object') {
+      // Group predictions by type
+      predictionHistory.value = Object.keys(data).map(type => ({
+        type,
+        predictions: data[type]
+      }));
+      console.log("Loaded prediction history:", predictionHistory.value.length, "types");
+    } else {
+      predictionHistory.value = [];
+    }
+  } catch (error) {
+    console.error("Error loading prediction history:", error);
+    predictionHistory.value = [];
+  }
+};
+
 const triggerPrediction = async (selectedBots = null) => {
   isLoading.value = true;
+  
+  // Clear previous predictions when triggering new prediction
+  predictions.value = [];
+  latestPrediction.value = null;
+  
   try {
     const result = await api.triggerPrediction(
       selectedSymbol.value,
@@ -811,6 +891,15 @@ const triggerPrediction = async (selectedBots = null) => {
 
 const triggerPredictionWithBots = async (bots) => {
   await triggerPrediction(bots);
+};
+
+const togglePredictionHistory = async () => {
+  showPredictionHistory.value = !showPredictionHistory.value;
+  
+  // Load history when toggling on (lazy load)
+  if (showPredictionHistory.value && predictionHistory.value.length === 0) {
+    await loadPredictionHistory();
+  }
 };
 
 const clearAllModels = async () => {
@@ -2135,6 +2224,15 @@ onBeforeUnmount(() => {
 
 .btn-model.btn-clear:hover:not(:disabled) {
   box-shadow: 0 4px 12px rgba(149, 165, 166, 0.5);
+}
+
+.btn-model.btn-history-active {
+  background: linear-gradient(135deg, #26a69a, #1e8e84);
+  box-shadow: 0 2px 8px rgba(38, 166, 154, 0.5);
+}
+
+.btn-model.btn-history-active:hover:not(:disabled) {
+  box-shadow: 0 4px 12px rgba(38, 166, 154, 0.5);
 }
 
 .btn-refresh {

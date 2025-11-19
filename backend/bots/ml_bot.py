@@ -240,37 +240,32 @@ class MLBot(BaseBot):
             return self._empty_prediction()
     
     def _create_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Create features for ML model"""
-        # Lagged prices
-        df['feature_lag_1'] = df['close'].shift(1)
-        df['feature_lag_5'] = df['close'].shift(5)
-        df['feature_lag_10'] = df['close'].shift(10)
-        df['feature_lag_20'] = df['close'].shift(20)
+        """Create comprehensive features for ML model using unified feature engineering"""
+        from backend.utils.feature_engineering import engineer_comprehensive_features
         
-        # Rolling statistics
-        df['feature_rolling_mean_10'] = df['close'].rolling(window=10).mean()
-        df['feature_rolling_std_10'] = df['close'].rolling(window=10).std()
-        df['feature_rolling_mean_20'] = df['close'].rolling(window=20).mean()
+        # Use comprehensive feature engineering
+        features_df = engineer_comprehensive_features(
+            df,
+            include_indicators=True,
+            include_volume_features=True,
+            include_price_features=True,
+            include_returns_features=True
+        )
         
-        # Price momentum
-        df['feature_momentum_5'] = df['close'] - df['close'].shift(5)
-        df['feature_momentum_10'] = df['close'] - df['close'].shift(10)
+        # Add lagged features for time series context
+        features_df['feature_lag_1'] = features_df['close'].shift(1)
+        features_df['feature_lag_5'] = features_df['close'].shift(5)
+        features_df['feature_lag_10'] = features_df['close'].shift(10)
         
-        # Returns
-        df['feature_return_1'] = df['close'].pct_change(1)
-        df['feature_return_5'] = df['close'].pct_change(5)
+        # Prefix all feature columns for ML model
+        feature_cols = [col for col in features_df.columns 
+                       if col not in ['start_ts', 'open', 'high', 'low', 'close', 'volume']]
         
-        # Volume features (if available)
-        if 'volume' in df.columns:
-            df['feature_volume_mean_10'] = df['volume'].rolling(window=10).mean()
-            df['feature_volume_std_10'] = df['volume'].rolling(window=10).std()
+        # Rename to feature_ prefix for consistency
+        rename_dict = {col: f'feature_{col}' for col in feature_cols}
+        features_df = features_df.rename(columns=rename_dict)
         
-        # High-Low range
-        if 'high' in df.columns and 'low' in df.columns:
-            df['feature_hl_range'] = (df['high'] - df['low']) / df['close']
-            df['feature_hl_mean_10'] = df['feature_hl_range'].rolling(window=10).mean()
-        
-        return df
+        return features_df
     
     def _empty_prediction(self) -> Dict:
         """Return empty prediction on error"""

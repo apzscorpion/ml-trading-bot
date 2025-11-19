@@ -193,13 +193,17 @@ start_backend() {
     # Set PYTHONPATH to project root
     export PYTHONPATH="$PROJECT_ROOT:${PYTHONPATH}"
     
-    # Start backend in background with logging
-    nohup python main.py > "../$BACKEND_LOG" 2>&1 &
+    # Start backend in background
+    # Note: Python logging system handles its own log files (backend-YYYY-MM-DD.log)
+    # We redirect to /dev/null to avoid conflicts, or use a simple startup log
+    nohup python main.py > /dev/null 2>&1 &
     BACKEND_PID=$!
     echo $BACKEND_PID > "../logs/backend.pid"
     
     print_success "Backend started (PID: $BACKEND_PID)"
-    print_info "Backend logs: $BACKEND_LOG"
+    # Get today's date for log file name
+    TODAY=$(date +%Y-%m-%d)
+    print_info "Backend logs: ${LOG_DIR}/backend-${TODAY}.log (managed by Python logging system)"
     
     # Wait for backend to be ready
     print_info "Waiting for backend to be ready..."
@@ -211,7 +215,8 @@ start_backend() {
         fi
         if [ $i -eq 30 ]; then
             print_error "Backend failed to start within 30 seconds"
-            print_error "Check logs: tail -f $BACKEND_LOG"
+            TODAY=$(date +%Y-%m-%d)
+            print_error "Check logs: tail -f ${LOG_DIR}/backend-${TODAY}.log"
             return 1
         fi
         sleep 1
@@ -283,12 +288,14 @@ display_status() {
     echo -e "   Health:   ${GREEN}http://localhost:$BACKEND_PORT/health${NC}"
     echo -e "   WebSocket: ${GREEN}ws://localhost:$BACKEND_PORT/ws${NC}"
     echo -e "   PID:      $(cat logs/backend.pid 2>/dev/null || echo 'N/A')"
-    echo -e "   Logs:     ${BLUE}tail -f $BACKEND_LOG${NC}\n"
+    TODAY=$(date +%Y-%m-%d)
+    echo -e "   Logs:     ${BLUE}tail -f ${LOG_DIR}/backend-${TODAY}.log${NC}\n"
     
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
     
+    TODAY=$(date +%Y-%m-%d)
     echo -e "${YELLOW}📋 Useful Commands:${NC}"
-    echo -e "   View backend logs:  ${BLUE}tail -f $BACKEND_LOG${NC}"
+    echo -e "   View backend logs:  ${BLUE}tail -f ${LOG_DIR}/backend-${TODAY}.log${NC}"
     echo -e "   View frontend logs: ${BLUE}tail -f $FRONTEND_LOG${NC}"
     echo -e "   View all logs:      ${BLUE}tail -f $COMBINED_LOG${NC}"
     echo -e "   Stop services:      ${BLUE}./stop.sh${NC}"

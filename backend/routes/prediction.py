@@ -26,6 +26,59 @@ router = APIRouter(prefix="/api/prediction", tags=["prediction"])
 MODEL_STALE_THRESHOLD_HOURS = 24
 
 
+def determine_prediction_type(selected_bots: Optional[List[str]]) -> str:
+    """
+    Determine prediction type based on selected bots.
+    
+    Returns:
+        "technical" - RSI, MACD, MA bots
+        "ml" - ML bot, Ensemble bot
+        "lstm" - LSTM bot only
+        "transformer" - Transformer bot only
+        "deep_learning" - Both LSTM and Transformer
+        "ensemble" - All bots or no specific selection
+        "all" - All bots explicitly selected
+    """
+    if not selected_bots or len(selected_bots) == 0:
+        return "ensemble"
+    
+    selected_bots_set = set(selected_bots)
+    
+    # Technical analysis bots
+    technical_bots = {"rsi_bot", "macd_bot", "ma_bot"}
+    # ML bots
+    ml_bots = {"ml_bot", "ensemble_bot"}
+    # Deep learning bots
+    dl_bots = {"lstm_bot", "transformer_bot"}
+    
+    # Check if only technical bots
+    if selected_bots_set.issubset(technical_bots) and len(selected_bots_set) > 0:
+        return "technical"
+    
+    # Check if only ML bots (but not all bots)
+    if selected_bots_set.issubset(ml_bots) and not selected_bots_set.intersection(dl_bots) and not selected_bots_set.intersection(technical_bots):
+        return "ml"
+    
+    # Check if only LSTM
+    if selected_bots_set == {"lstm_bot"}:
+        return "lstm"
+    
+    # Check if only Transformer
+    if selected_bots_set == {"transformer_bot"}:
+        return "transformer"
+    
+    # Check if both LSTM and Transformer (but not all bots)
+    if selected_bots_set.issubset(dl_bots) and len(selected_bots_set) == 2:
+        return "deep_learning"
+    
+    # If all bots or mixed selection, return "ensemble"
+    all_bots = technical_bots | ml_bots | dl_bots
+    if selected_bots_set == all_bots or len(selected_bots_set) >= 5:
+        return "all"
+    
+    return "ensemble"
+
+
 class PredictionRequest(BaseModel):
     symbol: str
     timeframe: str = "5m"
@@ -191,20 +244,45 @@ async def trigger_prediction(
         selected_bots=request.selected_bots
     )
     
+    # Determine prediction type from selected bots
+    prediction_type = determine_prediction_type(request.selected_bots)
+    
+    # Check if prediction_type column exists in database (for backward compatibility)
+    has_prediction_type_column = False
+    try:
+        # Check if column exists by querying table info
+        from sqlalchemy import inspect
+        from backend.database import engine
+        inspector = inspect(engine)
+        columns = [col['name'] for col in inspector.get_columns('predictions')]
+        has_prediction_type_column = 'prediction_type' in columns
+    except Exception as e:
+        # If inspection fails, assume column doesn't exist (safer)
+        logger.debug(f"Could not check for prediction_type column: {e}")
+        has_prediction_type_column = False
+    
     # Store prediction in DB with enhanced audit fields
-    prediction = Prediction(
-        symbol=result["symbol"],
-        produced_at=datetime.fromisoformat(result["produced_at"].replace('Z', '+00:00')),
-        horizon_minutes=result["horizon_minutes"],
-        timeframe=result["timeframe"],
-        predicted_series=result["predicted_series"],
-        confidence=result["overall_confidence"],
-        bot_contributions=result["bot_contributions"],
-        trend=result.get("trend"),
-        bot_raw_outputs=result.get("bot_raw_outputs"),
-        validation_flags=result.get("validation_flags"),
-        feature_snapshot=result.get("feature_snapshot")
-    )
+    prediction_data = {
+        "symbol": result["symbol"],
+        "produced_at": datetime.fromisoformat(result["produced_at"].replace('Z', '+00:00')),
+        "horizon_minutes": result["horizon_minutes"],
+        "timeframe": result["timeframe"],
+        "predicted_series": result["predicted_series"],
+        "confidence": result["overall_confidence"],
+        "bot_contributions": result["bot_contributions"],
+        "trend": result.get("trend"),
+        "bot_raw_outputs": result.get("bot_raw_outputs"),
+        "validation_flags": result.get("validation_flags"),
+        "feature_snapshot": result.get("feature_snapshot"),
+    }
+    
+    # Only add prediction_type if column exists
+    if has_prediction_type_column:
+        prediction_data["prediction_type"] = prediction_type
+    else:
+        logger.warning("prediction_type column does not exist yet. Run migration or restart server.")
+    
+    prediction = Prediction(**prediction_data)
     
     db.add(prediction)
     db.commit()
@@ -254,15 +332,45 @@ async def get_prediction_history(
     symbol: str = Query(..., description="Stock symbol"),
     timeframe: str = Query("5m", description="Timeframe"),
     limit: int = Query(50, description="Number of predictions to return"),
+    prediction_type: Optional[str] = Query(None, description="Filter by prediction type (technical, ml, lstm, transformer, deep_learning, ensemble, all)"),
     db: Session = Depends(get_db)
 ):
-    """Get historical predictions for a symbol"""
-    predictions = db.query(Prediction).filter(
+    """Get historical predictions for a symbol, optionally filtered by prediction type"""
+    query = db.query(Prediction).filter(
         Prediction.symbol == symbol,
         Prediction.timeframe == timeframe
-    ).order_by(Prediction.produced_at.desc()).limit(limit).all()
+    )
+    
+    if prediction_type:
+        query = query.filter(Prediction.prediction_type == prediction_type)
+    
+    predictions = query.order_by(Prediction.produced_at.desc()).limit(limit).all()
     
     return [p.to_dict() for p in predictions]
+
+
+@router.get("/history/by-type")
+async def get_prediction_history_by_type(
+    symbol: str = Query(..., description="Stock symbol"),
+    timeframe: str = Query("5m", description="Timeframe"),
+    limit_per_type: int = Query(10, description="Number of predictions per type to return"),
+    db: Session = Depends(get_db)
+):
+    """Get historical predictions grouped by prediction type"""
+    prediction_types = ["technical", "ml", "lstm", "transformer", "deep_learning", "ensemble", "all"]
+    
+    result = {}
+    for pred_type in prediction_types:
+        predictions = db.query(Prediction).filter(
+            Prediction.symbol == symbol,
+            Prediction.timeframe == timeframe,
+            Prediction.prediction_type == pred_type
+        ).order_by(Prediction.produced_at.desc()).limit(limit_per_type).all()
+        
+        if predictions:
+            result[pred_type] = [p.to_dict() for p in predictions]
+    
+    return result
 
 
 @router.get("/bots/available")

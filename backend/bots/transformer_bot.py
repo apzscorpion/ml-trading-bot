@@ -244,7 +244,9 @@ class TransformerBot(BaseBot):
         num_heads = 4
         ff_dim = 64
         
-        inputs = layers.Input(shape=(self.sequence_length, 7))
+        # Updated to handle more features (will be determined dynamically during training)
+        # Default to 20 features (OHLCV + 15 key indicators)
+        inputs = layers.Input(shape=(self.sequence_length, 20))
         
         # Position encoding
         positions = tf.range(start=0, limit=self.sequence_length, delta=1)
@@ -397,19 +399,45 @@ class TransformerBot(BaseBot):
             return self._fallback_prediction(candles, horizon_minutes, timeframe)
     
     def _prepare_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Prepare features including technical indicators"""
-        features = pd.DataFrame()
-        features['open'] = df['open']
-        features['high'] = df['high']
-        features['low'] = df['low']
-        features['close'] = df['close']
-        features['volume'] = df['volume']
+        """Prepare comprehensive features including technical indicators and volume"""
+        from backend.utils.feature_engineering import engineer_comprehensive_features
         
-        # Add technical indicators
-        features['returns'] = df['close'].pct_change()
-        features['volatility'] = features['returns'].rolling(window=10).std()
+        # Use comprehensive feature engineering
+        features_df = engineer_comprehensive_features(
+            df,
+            include_indicators=True,
+            include_volume_features=True,
+            include_price_features=True,
+            include_returns_features=True
+        )
         
-        return features.bfill().fillna(0)
+        # Select key features for Transformer (attention mechanism benefits from rich features)
+        key_features = [
+            'open', 'high', 'low', 'close', 'volume',
+            'rsi_14', 'macd', 'macd_signal',
+            'stoch_rsi_k', 'stoch_rsi_d',
+            'bb_position', 'atr_14',
+            'volume_ratio_20', 'obv_ratio', 'mfi_14',
+            'momentum_10', 'volatility_10', 'returns_5',
+            'sma_20', 'ema_21'
+        ]
+        
+        # Only include columns that exist
+        available_features = [col for col in key_features if col in features_df.columns]
+        
+        if len(available_features) < 5:
+            # Fallback to basic OHLCV + returns + volatility
+            features = pd.DataFrame()
+            features['open'] = df['open']
+            features['high'] = df['high']
+            features['low'] = df['low']
+            features['close'] = df['close']
+            features['volume'] = df['volume']
+            features['returns'] = df['close'].pct_change()
+            features['volatility'] = features['returns'].rolling(window=10).std()
+            return features.bfill().fillna(0)
+        
+        return features_df[available_features].bfill().fillna(0)
     
     def _fallback_prediction(self, candles: List[Dict], horizon_minutes: int, timeframe: str) -> Dict:
         """Fallback prediction using momentum analysis"""

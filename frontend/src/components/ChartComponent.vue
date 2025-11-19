@@ -138,6 +138,18 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  timeframe: {
+    type: String,
+    default: "5m",
+  },
+  predictionHistory: {
+    type: Array,
+    default: () => [],
+  },
+  showPredictionHistory: {
+    type: Boolean,
+    default: false,
+  },
 });
 
 const chartContainer = ref(null);
@@ -148,6 +160,7 @@ let blueLineSeries = null;
 let redLineSeries = null;
 let redAreaSeries = null; // Area series for prediction
 let blackLineSeries = null;
+let historySeriesMap = {}; // Map of prediction type -> line series for history
 let isLoadingMore = false;
 let isLoadingNewer = false;
 let lastCandleTime = null; // Track last candle timestamp for live updates
@@ -237,12 +250,52 @@ const validatePredictions = (predictions, candleData) => {
 };
 
 /**
+ * Get color for prediction type
+ * @param {string} type - Prediction type
+ * @returns {string} Color hex code
+ */
+const getPredictionTypeColor = (type) => {
+  const colorMap = {
+    technical: "#26a69a", // teal
+    ml: "#2962ff", // blue
+    lstm: "#ff6b6b", // red
+    transformer: "#feca57", // yellow
+    deep_learning: "#ff6b6b", // red (same as LSTM for now)
+    ensemble: "#6c5ce7", // purple
+    all: "#6c5ce7", // purple
+  };
+  return colorMap[type] || "#999999"; // default gray
+};
+
+/**
+ * Convert timeframe string to seconds
+ * @param {string} timeframe - Timeframe string (e.g., "5m", "15m", "1h")
+ * @returns {number} Interval in seconds
+ */
+const timeframeToSeconds = (timeframe) => {
+  const timeframeMap = {
+    "1m": 60,
+    "5m": 300,
+    "15m": 900,
+    "30m": 1800,
+    "1h": 3600,
+    "4h": 14400,
+    "1d": 86400,
+    "5d": 432000,
+    "1wk": 604800,
+    "1mo": 2592000,
+    "3mo": 7776000,
+  };
+  return timeframeMap[timeframe] || 300; // Default to 5m (300s)
+};
+
+/**
  * Interpolate prediction data to create smooth points at regular intervals
  * @param {Array} predictions - Array of prediction points with ts and price
- * @param {number} intervalSeconds - Interval between interpolated points in seconds (default: 60 for 1 minute)
+ * @param {number} intervalSeconds - Interval between interpolated points in seconds
  * @returns {Array} Interpolated data points
  */
-const interpolatePredictions = (predictions, intervalSeconds = 60) => {
+const interpolatePredictions = (predictions, intervalSeconds) => {
   if (!predictions || predictions.length === 0) {
     return [];
   }
@@ -870,8 +923,9 @@ const updateChart = () => {
       return;
     }
 
-    // Interpolate to create smooth line with points every minute
-    const interpolatedData = interpolatePredictions(props.predictions, 60);
+    // Interpolate to create smooth line aligned to chart timeframe
+    const intervalSeconds = timeframeToSeconds(props.timeframe);
+    const interpolatedData = interpolatePredictions(props.predictions, intervalSeconds);
 
     console.log("Interpolated data:", {
       count: interpolatedData.length,
@@ -898,10 +952,11 @@ const updateChart = () => {
 
   // Update black line (historical predictions) with interpolation
   if (props.historicalPredictions.length > 0) {
-    // Interpolate to create smooth line
+    // Interpolate to create smooth line aligned to chart timeframe
+    const intervalSeconds = timeframeToSeconds(props.timeframe);
     const interpolatedBlackData = interpolatePredictions(
       props.historicalPredictions,
-      60
+      intervalSeconds
     );
 
     // Deduplicate and sort
@@ -912,6 +967,61 @@ const updateChart = () => {
     blackLineSeries.setData(uniqueBlackData);
   } else {
     blackLineSeries.setData([]);
+  }
+
+  // Update prediction history series (only when showPredictionHistory is true)
+  if (props.showPredictionHistory && props.predictionHistory && props.predictionHistory.length > 0) {
+    const intervalSeconds = timeframeToSeconds(props.timeframe);
+    
+    // Create series for each prediction type if they don't exist
+    props.predictionHistory.forEach(({ type, predictions: typePredictions }) => {
+      if (!typePredictions || typePredictions.length === 0) return;
+      
+      // Create series if it doesn't exist
+      if (!historySeriesMap[type]) {
+        const color = getPredictionTypeColor(type);
+        historySeriesMap[type] = chart.addLineSeries({
+          color: color,
+          lineWidth: 1,
+          lineStyle: 2, // Dashed line
+          title: type.charAt(0).toUpperCase() + type.slice(1),
+          visible: true,
+        });
+      }
+      
+      // Process all predictions of this type
+      const allPoints = [];
+      typePredictions.forEach((prediction) => {
+        if (prediction.predicted_series && prediction.predicted_series.length > 0) {
+          const interpolated = interpolatePredictions(
+            prediction.predicted_series,
+            intervalSeconds
+          );
+          allPoints.push(...interpolated);
+        }
+      });
+      
+      // Deduplicate and sort
+      const uniquePoints = Array.from(
+        new Map(allPoints.map((item) => [item.time, item])).values()
+      ).sort((a, b) => a.time - b.time);
+      
+      historySeriesMap[type].setData(uniquePoints);
+    });
+    
+    // Remove series for types that are no longer in history
+    Object.keys(historySeriesMap).forEach((type) => {
+      const exists = props.predictionHistory.some((h) => h.type === type);
+      if (!exists) {
+        chart.removeSeries(historySeriesMap[type]);
+        delete historySeriesMap[type];
+      }
+    });
+  } else {
+    // Hide all history series when showPredictionHistory is false
+    Object.values(historySeriesMap).forEach((series) => {
+      series.setData([]);
+    });
   }
 
   // Only fit content if this is initial load (chart is empty or we're zoomed out)
@@ -974,8 +1084,9 @@ const updatePrediction = (predictions) => {
     return;
   }
 
-  // Interpolate predictions for smooth line
-  const interpolatedData = interpolatePredictions(predictions, 60);
+  // Interpolate predictions for smooth line aligned to chart timeframe
+  const intervalSeconds = timeframeToSeconds(props.timeframe);
+  const interpolatedData = interpolatePredictions(predictions, intervalSeconds);
 
   // Update both area and line
   if (redAreaSeries) {
@@ -1026,6 +1137,8 @@ onBeforeUnmount(() => {
 watch(() => props.candles, updateChart, { deep: true });
 watch(() => props.predictions, updateChart, { deep: true });
 watch(() => props.historicalPredictions, updateChart, { deep: true });
+watch(() => props.showPredictionHistory, updateChart);
+watch(() => props.predictionHistory, updateChart, { deep: true });
 
 // Expose methods to parent
 defineExpose({
