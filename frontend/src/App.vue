@@ -57,15 +57,37 @@
         </div>
 
         <div class="control-group">
-          <label>Prediction Horizon: {{ horizonMinutes }} min</label>
+          <label>Prediction Horizon: {{ formatHorizon(horizonMinutes) }}</label>
           <input
             type="range"
             v-model="horizonMinutes"
             min="30"
-            max="360"
+            max="2340"
             step="30"
             class="slider"
           />
+          <div class="horizon-presets">
+            <button 
+              @click="horizonMinutes = 180" 
+              :class="{ active: horizonMinutes === 180 }"
+              class="horizon-btn"
+            >3h</button>
+            <button 
+              @click="horizonMinutes = 390" 
+              :class="{ active: horizonMinutes === 390 }"
+              class="horizon-btn"
+            >1 Day</button>
+            <button 
+              @click="horizonMinutes = 780" 
+              :class="{ active: horizonMinutes === 780 }"
+              class="horizon-btn"
+            >2 Days</button>
+            <button 
+              @click="horizonMinutes = 1170" 
+              :class="{ active: horizonMinutes === 1170 }"
+              class="horizon-btn"
+            >3 Days</button>
+          </div>
         </div>
 
         <div class="control-group">
@@ -308,7 +330,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount, computed, watch } from "vue";
+import { ref, onMounted, onBeforeUnmount, computed, watch, nextTick } from "vue";
 import ChartComponent from "./components/ChartComponent.vue";
 import PredictionAnalysis from "./components/PredictionAnalysis.vue";
 import PredictionAccuracy from "./components/PredictionAccuracy.vue";
@@ -362,6 +384,27 @@ const latestPrice = computed(() => {
   }
   return null;
 });
+
+// Format horizon minutes to readable format
+const formatHorizon = (minutes) => {
+  if (minutes < 60) {
+    return `${minutes} min`;
+  } else if (minutes < 1440) {
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    if (mins === 0) {
+      return `${hours}h`;
+    }
+    return `${hours}h ${mins}m`;
+  } else {
+    const days = Math.floor(minutes / 390); // 390 minutes = 1 trading day
+    const remainingHours = Math.floor((minutes % 390) / 60);
+    if (remainingHours === 0) {
+      return `${days} day${days > 1 ? 's' : ''}`;
+    }
+    return `${days} day${days > 1 ? 's' : ''} ${remainingHours}h`;
+  }
+};
 
 const availableSymbols = ref([
   "TCS.NS",
@@ -861,6 +904,63 @@ const loadPredictionHistory = async () => {
   }
 };
 
+// Helper function to determine prediction type from selected bots (matches backend logic)
+const determinePredictionType = (selectedBots) => {
+  if (!selectedBots || selectedBots.length === 0) {
+    return "ensemble";
+  }
+  
+  const selectedBotsSet = new Set(selectedBots);
+  
+  // Technical analysis bots
+  const technicalBots = new Set(["rsi_bot", "macd_bot", "ma_bot"]);
+  // ML bots
+  const mlBots = new Set(["ml_bot", "ensemble_bot"]);
+  // Deep learning bots
+  const dlBots = new Set(["lstm_bot", "transformer_bot"]);
+  // All bots
+  const allBots = new Set([...technicalBots, ...mlBots, ...dlBots]);
+  
+  // Check if only technical bots (all selected bots are in technicalBots and at least one)
+  const isSubsetOfTechnical = selectedBotsSet.size > 0 && 
+    [...selectedBotsSet].every(bot => technicalBots.has(bot));
+  if (isSubsetOfTechnical) {
+    return "technical";
+  }
+  
+  // Check if only ML bots (all selected bots are in mlBots, none in dlBots, none in technicalBots)
+  const isSubsetOfML = [...selectedBotsSet].every(bot => mlBots.has(bot));
+  const hasDL = [...selectedBotsSet].some(bot => dlBots.has(bot));
+  const hasTechnical = [...selectedBotsSet].some(bot => technicalBots.has(bot));
+  if (isSubsetOfML && !hasDL && !hasTechnical) {
+    return "ml";
+  }
+  
+  // Check if only LSTM
+  if (selectedBotsSet.size === 1 && selectedBotsSet.has("lstm_bot")) {
+    return "lstm";
+  }
+  
+  // Check if only Transformer
+  if (selectedBotsSet.size === 1 && selectedBotsSet.has("transformer_bot")) {
+    return "transformer";
+  }
+  
+  // Check if both LSTM and Transformer (but not all bots)
+  const isSubsetOfDL = [...selectedBotsSet].every(bot => dlBots.has(bot));
+  if (isSubsetOfDL && selectedBotsSet.size === 2) {
+    return "deep_learning";
+  }
+  
+  // If all bots or mixed selection with 5+ bots, return "all"
+  const hasAllBots = [...allBots].every(bot => selectedBotsSet.has(bot));
+  if (hasAllBots || selectedBotsSet.size >= 5) {
+    return "all";
+  }
+  
+  return "ensemble";
+};
+
 const triggerPrediction = async (selectedBots = null) => {
   isLoading.value = true;
   
@@ -869,6 +969,11 @@ const triggerPrediction = async (selectedBots = null) => {
   latestPrediction.value = null;
   
   try {
+    // Determine prediction type from selected bots
+    const predictionType = determinePredictionType(selectedBots);
+    
+    console.log(`🔄 Triggering prediction with bots:`, selectedBots, `→ type: ${predictionType}`);
+    
     const result = await api.triggerPrediction(
       selectedSymbol.value,
       selectedTimeframe.value,
@@ -876,7 +981,24 @@ const triggerPrediction = async (selectedBots = null) => {
       selectedBots
     );
 
-    if (result && result.result) {
+    // Wait a bit for the prediction to be saved to DB
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    // Fetch the latest prediction filtered by the prediction type we just created
+    const latestPred = await api.fetchLatestPrediction(
+      selectedSymbol.value,
+      selectedTimeframe.value,
+      predictionType
+    );
+    
+    if (latestPred && !latestPred.error && latestPred.predicted_series) {
+      latestPrediction.value = latestPred;
+      predictions.value = latestPred.predicted_series;
+      lastUpdateTime.value = new Date(latestPred.produced_at).toLocaleTimeString();
+      analysisRefreshTrigger.value++;
+      console.log(`✅ Loaded ${predictionType} prediction with ${latestPred.predicted_series.length} points`);
+    } else if (result && result.result) {
+      // Fallback to result from trigger if latest fetch fails
       latestPrediction.value = result.result;
       predictions.value = result.result.predicted_series;
       lastUpdateTime.value = new Date().toLocaleTimeString();
@@ -1291,7 +1413,13 @@ const selectTimeframe = async (tf) => {
       "Timeframe Change Error"
     );
   } finally {
-    isLoadingSymbol.value = false;
+    // Use nextTick with a small delay to ensure DOM updates complete
+    // This prevents Vue from trying to patch components that are being updated
+    await nextTick();
+    // Small delay to ensure chart updates have completed
+    setTimeout(() => {
+      isLoadingSymbol.value = false;
+    }, 100);
   }
 };
 
@@ -1779,7 +1907,7 @@ onBeforeUnmount(() => {
 
 .header {
   background: #18181b;
-  padding: 20px 32px;
+  padding: 12px 20px; /* Reduced padding */
   border-bottom: 1px solid #2b2b2e;
   display: flex;
   justify-content: space-between;
@@ -1801,12 +1929,12 @@ onBeforeUnmount(() => {
 
 .stock-info-banner {
   background: linear-gradient(135deg, #1a1a1d, #2b2b2e);
-  padding: 20px 24px;
-  border-radius: 8px;
+  padding: 12px 16px; /* Reduced padding */
+  border-radius: 6px;
   border: 1px solid #2b2b2e;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px; /* Reduced gap */
 }
 
 .stock-info-main {
@@ -1903,12 +2031,12 @@ onBeforeUnmount(() => {
 }
 
 .main-content {
-  max-width: 1800px;
+  max-width: 100%;
   margin: 0 auto;
-  padding: 32px;
+  padding: 16px 20px; /* Reduced padding for more space */
   display: grid;
-  grid-template-columns: 1fr 300px;
-  gap: 24px;
+  grid-template-columns: 1fr 280px; /* Slightly narrower sidebar */
+  gap: 16px; /* Reduced gap */
   align-items: start;
 }
 
@@ -1920,30 +2048,61 @@ onBeforeUnmount(() => {
   grid-column: 2;
   grid-row: 1 / -1;
   position: sticky;
-  top: 32px;
+  top: 16px; /* Reduced top offset */
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
 }
 
 .controls-panel {
   display: flex;
-  gap: 24px;
+  gap: 16px; /* Reduced gap */
   align-items: flex-end;
   background: #18181b;
-  padding: 20px;
-  border-radius: 8px;
+  padding: 12px 16px; /* Reduced padding */
+  border-radius: 6px;
   flex-wrap: wrap;
 }
 
 .control-group {
   display: flex;
   flex-direction: column;
+  gap: 8px; /* Slightly increased for better spacing */
+  min-width: 120px; /* Reduced min-width */
+}
+
+.horizon-presets {
+  display: flex;
   gap: 8px;
-  min-width: 150px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.horizon-btn {
+  padding: 6px 12px;
+  background: #1a1a1d;
+  border: 1px solid #2b2b2e;
+  border-radius: 4px;
+  color: #efeff1;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.horizon-btn:hover {
+  background: #2b2b2e;
+  border-color: #2962ff;
+}
+
+.horizon-btn.active {
+  background: #2962ff;
+  border-color: #2962ff;
+  color: white;
 }
 
 .control-group-wide {
-  min-width: 300px;
+  min-width: 250px; /* Reduced min-width */
   flex: 1;
-  max-width: 500px;
+  max-width: 400px; /* Reduced max-width */
 }
 
 .control-group label {
@@ -2025,19 +2184,19 @@ onBeforeUnmount(() => {
 .metrics-panel {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 16px; /* Reduced gap */
 }
 
 .metrics-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); /* Reduced min-width */
+  gap: 12px; /* Reduced gap */
 }
 
 .metric-card {
   background: #18181b;
-  padding: 20px;
-  border-radius: 8px;
+  padding: 14px 16px; /* Reduced padding */
+  border-radius: 6px;
   border: 1px solid #2b2b2e;
 }
 
@@ -2113,21 +2272,22 @@ onBeforeUnmount(() => {
 
 .models-panel {
   background: #18181b;
-  padding: 24px;
-  border-radius: 8px;
+  padding: 16px; /* Reduced padding */
+  border-radius: 6px;
   border: 1px solid #2b2b2e;
 }
 
 .models-panel h3 {
-  margin: 0 0 20px 0;
+  margin: 0 0 16px 0; /* Reduced bottom margin */
   font-size: 18px;
   color: #efeff1;
+  line-height: 1.2; /* Tighter line height */
 }
 
 .models-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); /* Reduced min-width */
+  gap: 12px; /* Reduced gap */
 }
 
 .model-group {
@@ -2144,11 +2304,19 @@ onBeforeUnmount(() => {
 }
 
 .btn-model {
-  padding: 14px 20px;
+  padding: 12px 18px; /* Standardized padding */
+  min-width: 140px; /* Consistent minimum width */
+  min-height: 44px; /* Consistent minimum height */
   background: linear-gradient(135deg, #2962ff, #1e4fd9);
   border: none;
   border-radius: 8px;
   color: white;
+  font-size: 14px; /* Consistent font size */
+  font-weight: 500; /* Consistent font weight */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;

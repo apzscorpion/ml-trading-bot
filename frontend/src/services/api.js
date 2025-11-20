@@ -49,13 +49,20 @@ export const api = {
   /**
    * Trigger prediction
    */
-  async triggerPrediction(symbol, timeframe = '5m', horizonMinutes = 180) {
+  async triggerPrediction(symbol, timeframe = '5m', horizonMinutes = 180, selectedBots = null) {
     try {
-      const response = await axios.post(`${API_BASE}/prediction/trigger`, {
+      const payload = {
         symbol,
         timeframe,
         horizon_minutes: horizonMinutes
-      })
+      }
+      
+      // Add selected_bots if provided
+      if (selectedBots && Array.isArray(selectedBots) && selectedBots.length > 0) {
+        payload.selected_bots = selectedBots
+      }
+      
+      const response = await axios.post(`${API_BASE}/prediction/trigger`, payload)
       return response.data
     } catch (error) {
       console.error('Error triggering prediction:', error)
@@ -364,11 +371,13 @@ export const api = {
     }
   },
 
-  async fetchLatestPrediction(symbol, timeframe = '5m') {
+  async fetchLatestPrediction(symbol, timeframe = '5m', predictionType = null) {
     try {
-      const response = await axios.get(`${API_BASE}/prediction/latest`, {
-        params: { symbol, timeframe }
-      })
+      const params = { symbol, timeframe }
+      if (predictionType) {
+        params.prediction_type = predictionType
+      }
+      const response = await axios.get(`${API_BASE}/prediction/latest`, { params })
       return response.data
     } catch (error) {
       console.error('Error fetching latest prediction:', error)

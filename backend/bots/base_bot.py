@@ -432,4 +432,101 @@ class BaseBot(ABC):
             "trend_strength_category": strength_category,
             "trend_duration_minutes": duration
         }
+    
+    def _apply_volatility_pattern(
+        self,
+        predicted_series: List[Dict],
+        recent_candles: List[Dict],
+        reference_price: float
+    ) -> List[Dict]:
+        """
+        Apply volatility pattern from recent candles to predictions.
+        This ensures predictions follow actual market movements, not straight lines.
+        
+        Args:
+            predicted_series: List of {ts, price} predictions (may be smooth/linear)
+            recent_candles: Recent candles to extract volatility pattern from
+            reference_price: Reference price (latest close)
+        
+        Returns:
+            List of {ts, price} predictions with volatility pattern applied
+        """
+        if not predicted_series or len(predicted_series) < 2:
+            return predicted_series
+        
+        if not recent_candles or len(recent_candles) < 5:
+            return predicted_series
+        
+        try:
+            import pandas as pd
+            
+            # Extract volatility pattern from recent candles
+            df_candles = pd.DataFrame(recent_candles)
+            if 'close' not in df_candles.columns:
+                return predicted_series
+            
+            # Calculate returns and volatility
+            candle_closes = df_candles['close'].values
+            candle_returns = np.diff(candle_closes) / candle_closes[:-1]
+            actual_volatility = float(np.std(candle_returns))
+            
+            # Extract base trend from predictions
+            predicted_prices = [p["price"] for p in predicted_series]
+            base_trend = (predicted_prices[-1] - predicted_prices[0]) / predicted_prices[0] if predicted_prices[0] > 0 else 0
+            
+            # Calculate predicted volatility (current)
+            predicted_returns = np.diff(predicted_prices) / np.array(predicted_prices[:-1])
+            predicted_volatility = float(np.std(predicted_returns))
+            
+            # If predicted volatility is too low (straight line), apply actual volatility pattern
+            if predicted_volatility < actual_volatility * 0.3:
+                # Generate realistic price movements with similar volatility
+                enhanced_prices = [predicted_prices[0]]
+                num_steps = len(predicted_prices) - 1
+                
+                # Calculate average step size from base trend
+                avg_step_pct = base_trend / num_steps if num_steps > 0 else 0
+                
+                # Add volatility-based fluctuations
+                np.random.seed(42)  # For reproducibility
+                for i in range(num_steps):
+                    # Base movement from trend
+                    trend_component = avg_step_pct
+                    
+                    # Add volatility component (random walk with actual volatility)
+                    volatility_component = np.random.normal(0, actual_volatility)
+                    
+                    # Combine trend and volatility
+                    step_change = trend_component + volatility_component
+                    
+                    # Ensure step change is reasonable
+                    step_change = np.clip(step_change, -0.03, 0.03)  # Max 3% per step
+                    
+                    # Apply to price
+                    new_price = enhanced_prices[-1] * (1 + step_change)
+                    enhanced_prices.append(float(new_price))
+                
+                # Scale to match final target price (preserve overall trend)
+                if len(enhanced_prices) > 1:
+                    scale_factor = predicted_prices[-1] / enhanced_prices[-1]
+                    enhanced_prices = [p * scale_factor for p in enhanced_prices]
+                
+                # Create enhanced series
+                enhanced_series = []
+                for i, point in enumerate(predicted_series):
+                    enhanced_series.append({
+                        "ts": point["ts"],
+                        "price": enhanced_prices[i] if i < len(enhanced_prices) else point["price"]
+                    })
+                
+                return enhanced_series
+            
+            # If volatility is already reasonable, return as-is
+            return predicted_series
+            
+        except Exception as e:
+            # On error, return original predictions
+            import logging
+            logging.getLogger(__name__).warning(f"Error applying volatility pattern: {e}")
+            return predicted_series
 

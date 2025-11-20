@@ -235,8 +235,12 @@ class TransformerBot(BaseBot):
             logger.warning(f"{self.name} creating new model due to load error")
             self._create_model()
     
-    def _create_model(self):
-        """Create a new Transformer model"""
+    def _create_model(self, n_features: int = 20):
+        """Create a new Transformer model
+        
+        Args:
+            n_features: Number of input features (default: 20 for backward compatibility)
+        """
         if not TENSORFLOW_AVAILABLE:
             return
         
@@ -245,8 +249,7 @@ class TransformerBot(BaseBot):
         ff_dim = 64
         
         # Updated to handle more features (will be determined dynamically during training)
-        # Default to 20 features (OHLCV + 15 key indicators)
-        inputs = layers.Input(shape=(self.sequence_length, 20))
+        inputs = layers.Input(shape=(self.sequence_length, n_features))
         
         # Position encoding
         positions = tf.range(start=0, limit=self.sequence_length, delta=1)
@@ -285,6 +288,10 @@ class TransformerBot(BaseBot):
         from sklearn.preprocessing import RobustScaler
         self.scaler = RobustScaler()
     
+    def _create_model_with_features(self, n_features: int):
+        """Create a new model with specified feature count"""
+        self._create_model(n_features)
+    
     async def predict(
         self, 
         candles: List[Dict],
@@ -310,6 +317,27 @@ class TransformerBot(BaseBot):
             
             # Get last sequence
             last_sequence = features[-self.sequence_length:].values
+            
+            # Get actual feature count
+            actual_n_features = last_sequence.shape[1]
+            
+            # CRITICAL: Check if model input shape matches actual feature count
+            try:
+                model_input_shape = self.model.input_shape
+                if model_input_shape:
+                    expected_features = model_input_shape[2] if len(model_input_shape) == 3 else model_input_shape[1]
+                    
+                    if expected_features != actual_n_features:
+                        logger.warning(
+                            f"{self.name} FEATURE MISMATCH during prediction: model expects {expected_features} features, "
+                            f"but data has {actual_n_features} features. Recreating model and using fallback..."
+                        )
+                        # Recreate model with correct shape for next time
+                        self._create_model_with_features(actual_n_features)
+                        # Use fallback for this prediction
+                        return self._fallback_prediction(candles, horizon_minutes, timeframe)
+            except (AttributeError, IndexError, TypeError) as e:
+                logger.warning(f"{self.name} could not check model input shape: {e}")
             
             # Normalize
             last_sequence_scaled = last_sequence.copy()
@@ -440,15 +468,34 @@ class TransformerBot(BaseBot):
         return features_df[available_features].bfill().fillna(0)
     
     def _fallback_prediction(self, candles: List[Dict], horizon_minutes: int, timeframe: str) -> Dict:
-        """Fallback prediction using momentum analysis"""
+        """Fallback prediction using recent momentum analysis"""
         try:
             df = pd.DataFrame(candles)
             last_close = float(df['close'].iloc[-1])
             
-            # Calculate momentum
-            short_ma = df['close'].tail(10).mean()
-            long_ma = df['close'].tail(30).mean()
-            momentum = (short_ma - long_ma) / long_ma
+            # HYBRID APPROACH: Blend immediate (last 5) and short-term (last 10) momentum
+            if len(df) < 10:
+                momentum = 0.0
+            else:
+                # Immediate: last 5 candles
+                recent_5 = df['close'].tail(5).mean()
+                # Short-term: last 10 candles
+                recent_10 = df['close'].tail(10).mean()
+                # Baseline: last 15 candles
+                baseline_15 = df['close'].tail(15).mean() if len(df) >= 15 else recent_10
+                
+                # Calculate momentum from different windows
+                momentum_5 = (recent_5 - recent_10) / recent_10 if recent_10 > 0 else 0
+                momentum_10 = (recent_10 - baseline_15) / baseline_15 if baseline_15 > 0 else 0
+                
+                # Blend: 40% immediate, 60% short-term
+                momentum = momentum_5 * 0.4 + momentum_10 * 0.6
+                
+                # Conservative extrapolation
+                momentum = momentum * 0.15  # Only 15% of observed momentum
+                
+                # Clip to very conservative range
+                momentum = np.clip(momentum, -0.01, 0.01)  # Max ±1%
             
             last_ts = df['start_ts'].iloc[-1]
             if isinstance(last_ts, str):
@@ -460,8 +507,9 @@ class TransformerBot(BaseBot):
             
             predicted_series = []
             for i, ts in enumerate(future_timestamps):
-                damping = 1.0 - (i / len(future_timestamps)) * 0.6
-                predicted_price = last_close * (1 + momentum * damping * 0.4)
+                # Stronger damping for more conservative predictions
+                damping = 1.0 - (i / len(future_timestamps)) * 0.8
+                predicted_price = last_close * (1 + momentum * damping * 0.3)
                 predicted_series.append({
                     "ts": ts.isoformat(),
                     "price": float(predicted_price)
@@ -469,11 +517,12 @@ class TransformerBot(BaseBot):
             
             return {
                 "predicted_series": predicted_series,
-                "confidence": 0.40,
+                "confidence": 0.35,  # Lower confidence for fallback
                 "bot_name": self.name,
                 "meta": {
                     "model_type": "fallback",
-                    "momentum": float(momentum)
+                    "momentum": float(momentum),
+                    "warning": "Model failed - using fallback prediction"
                 }
             }
         except Exception as e:
@@ -524,6 +573,27 @@ class TransformerBot(BaseBot):
             if len(features) < self.sequence_length + 10:
                 return {"error": f"Not enough data for training: {len(features)} < {self.sequence_length + 10}"}
             
+            # Get actual feature count from prepared features
+            n_features = features.shape[1]
+            
+            # CRITICAL: Check if model input shape matches actual feature count
+            # If not, recreate the model with correct input shape
+            try:
+                model_input_shape = self.model.input_shape
+                if model_input_shape:
+                    expected_features = model_input_shape[2] if len(model_input_shape) == 3 else model_input_shape[1]
+                    
+                    if expected_features != n_features:
+                        logger.warning(
+                            f"{self.name} model input shape mismatch: model expects {expected_features} features, "
+                            f"but data has {n_features} features. Recreating model..."
+                        )
+                        # Recreate model with correct input shape
+                        self._create_model_with_features(n_features)
+            except (AttributeError, IndexError, TypeError) as e:
+                logger.warning(f"{self.name} could not check model input shape: {e}. Recreating model...")
+                self._create_model_with_features(n_features)
+            
             # Generate model version
             data_hash = hashlib.md5(str(len(candles)).encode()).hexdigest()[:8]
             timestamp = datetime.utcnow().strftime("%Y%m%d")
@@ -540,17 +610,28 @@ class TransformerBot(BaseBot):
                 "learning_rate": 0.0005,
                 "loss": "huber",
                 "optimizer": "Adam",
-                "attention_heads": 4
+                "attention_heads": 4,
+                "n_features": n_features
             }
             
-            # Prepare sequences
+            # Prepare sequences - ensure numeric types
             X, y = [], []
             for i in range(self.sequence_length, len(features)):
-                X.append(features.iloc[i-self.sequence_length:i].values)
-                y.append(features['close'].iloc[i])
+                feature_values = features.iloc[i-self.sequence_length:i].values
+                # Ensure numeric types
+                feature_values = pd.DataFrame(feature_values).select_dtypes(include=[np.number]).values
+                if feature_values.shape[1] != n_features:
+                    # If some columns were dropped, pad or truncate
+                    if feature_values.shape[1] < n_features:
+                        padding = np.zeros((feature_values.shape[0], n_features - feature_values.shape[1]))
+                        feature_values = np.hstack([feature_values, padding])
+                    else:
+                        feature_values = feature_values[:, :n_features]
+                X.append(feature_values)
+                y.append(float(features['close'].iloc[i]))
             
-            X = np.array(X)
-            y = np.array(y).reshape(-1, 1)
+            X = np.array(X, dtype=np.float32)
+            y = np.array(y, dtype=np.float32).reshape(-1, 1)
 
             # Ensure scaler is initialised (legacy models may not have scaler persisted)
             if self.scaler is None:

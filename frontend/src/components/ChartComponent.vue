@@ -58,9 +58,28 @@
         </div>
         <div v-if="tooltipData.prediction.confidence" class="tooltip-item">
           <span class="label">Confidence:</span>
-          <span class="value"
-            >{{ (tooltipData.prediction.confidence * 100).toFixed(1) }}%</span
+          <span 
+            :class="[
+              'value',
+              tooltipData.prediction.confidence > 0.7 ? 'positive' : 
+              tooltipData.prediction.confidence > 0.5 ? '' : 'negative'
+            ]"
           >
+            {{ (tooltipData.prediction.confidence * 100).toFixed(1) }}%
+          </span>
+        </div>
+        <div v-if="tooltipData.prediction.quality" class="tooltip-item">
+          <span class="label">Quality:</span>
+          <span 
+            :class="[
+              'value',
+              tooltipData.prediction.quality === 'high' ? 'positive' : 
+              tooltipData.prediction.quality === 'medium' ? '' : 'negative'
+            ]"
+          >
+            {{ tooltipData.prediction.quality === 'high' ? '✓ High' : 
+               tooltipData.prediction.quality === 'medium' ? '○ Medium' : '✗ Low' }}
+          </span>
         </div>
         <div v-if="tooltipData.prediction.actual" class="tooltip-item">
           <span class="label">Actual:</span>
@@ -366,34 +385,58 @@ const interpolatePredictions = (predictions, intervalSeconds) => {
 const initChart = () => {
   if (!chartContainer.value) return;
 
-  // Create chart
+  // Create chart with more compact, investing.com-like styling
   chart = createChart(chartContainer.value, {
     width: chartContainer.value.clientWidth,
-    height: 600,
+    height: chartContainer.value.clientHeight || 700, // Use container height or default to 700
     layout: {
-      background: { color: "#1a1a1d" },
-      textColor: "#d1d4dc",
+      background: { color: "#0f172a" }, // Darker background like investing.com
+      textColor: "#cbd5e1", // Lighter text for better contrast
+      fontSize: 12, // Smaller font for compact look
     },
     grid: {
-      vertLines: { color: "#2b2b2e" },
-      horzLines: { color: "#2b2b2e" },
+      vertLines: { 
+        color: "rgba(148, 163, 184, 0.1)", // Subtle grid lines
+        visible: true,
+      },
+      horzLines: { 
+        color: "rgba(148, 163, 184, 0.1)",
+        visible: true,
+      },
     },
     crosshair: {
       mode: 1,
+      vertLine: {
+        color: "rgba(148, 163, 184, 0.5)",
+        width: 1,
+        style: 2, // Dashed
+      },
+      horzLine: {
+        color: "rgba(148, 163, 184, 0.5)",
+        width: 1,
+        style: 2, // Dashed
+      },
     },
     rightPriceScale: {
-      borderColor: "#2b2b2e",
+      borderColor: "rgba(148, 163, 184, 0.2)",
+      scaleMargins: {
+        top: 0.1,
+        bottom: 0.1,
+      },
+    },
+    leftPriceScale: {
+      visible: false, // Hide left scale for cleaner look
     },
     timeScale: {
-      borderColor: "#2b2b2e",
+      borderColor: "rgba(148, 163, 184, 0.2)",
       timeVisible: true,
       secondsVisible: false,
-      // Use IST timezone for Indian stocks
-      // IMPORTANT: lightweight-charts expects UTC Unix timestamps internally
-      // and applies timezone conversion for display on x-axis
       timezone: "Asia/Kolkata",
       rightOffset: 0,
-      barSpacing: 3,
+      barSpacing: 2, // Tighter spacing for more candles visible
+      minBarSpacing: 0.5,
+      fixLeftEdge: true,
+      fixRightEdge: false, // Allow panning to see future predictions
     },
   });
 
@@ -402,13 +445,19 @@ const initChart = () => {
     timezone: "Asia/Kolkata",
   });
 
-  // Add candlestick series
+  // Add candlestick series with investing.com-like colors
   candlestickSeries = chart.addCandlestickSeries({
-    upColor: "#26a69a",
-    downColor: "#ef5350",
-    borderVisible: false,
-    wickUpColor: "#26a69a",
-    wickDownColor: "#ef5350",
+    upColor: "#22c55e", // Green for up candles (like investing.com)
+    downColor: "#ef4444", // Red for down candles
+    borderUpColor: "#22c55e",
+    borderDownColor: "#ef4444",
+    wickUpColor: "#22c55e",
+    wickDownColor: "#ef4444",
+    priceFormat: {
+      type: "price",
+      precision: 2,
+      minMove: 0.01,
+    },
   });
 
   // Blue line - Actual prices
@@ -779,6 +828,12 @@ const updateChart = () => {
     return;
   }
 
+  // Guard: Check if chart container still exists in DOM
+  if (!chartContainer.value || !chartContainer.value.parentElement) {
+    console.log("⏸️ Chart container not in DOM, skipping update");
+    return;
+  }
+
   // Update loaded ranges when candles change
   updateLoadedRanges();
 
@@ -1100,6 +1155,7 @@ const handleResize = () => {
   if (chart && chartContainer.value) {
     chart.applyOptions({
       width: chartContainer.value.clientWidth,
+      height: chartContainer.value.clientHeight || 700,
     });
   }
 };
@@ -1151,15 +1207,17 @@ defineExpose({
 .chart-wrapper {
   position: relative;
   width: 100%;
-  background: #1a1a1d;
-  border-radius: 8px;
+  background: #0f172a; /* Darker background to match chart */
+  border-radius: 6px;
   overflow: hidden;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(148, 163, 184, 0.1);
 }
 
 .chart-container {
   width: 100%;
-  height: 600px;
+  height: 700px; /* Increased height for better visibility */
+  min-height: 500px; /* Minimum height for smaller screens */
 }
 
 .loading-overlay {

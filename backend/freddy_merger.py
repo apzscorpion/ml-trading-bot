@@ -20,6 +20,7 @@ from backend.ml.training.config import get_config as get_training_config
 from backend.ml.training.registry import ExperimentRegistry
 from backend.ml.validators import prediction_validator
 from backend.services.regime_detector import detect_regime
+from backend.services.model_performance_tracker import model_performance_tracker
 from backend.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -75,7 +76,12 @@ class FreddyMerger:
             return None
         return price
 
-    def _sanitize_bot_prediction(self, prediction: Dict, reference_close: Optional[float]) -> Optional[Dict]:
+    def _sanitize_bot_prediction(
+        self, 
+        prediction: Dict, 
+        reference_close: Optional[float],
+        recent_candles: Optional[List[Dict]] = None
+    ) -> Optional[Dict]:
         """Sanitize prediction using ML validator first, then legacy checks"""
         series = prediction.get("predicted_series")
         bot_name = prediction.get("bot_name", "unknown")
@@ -87,9 +93,9 @@ class FreddyMerger:
             logger.warning(f"Bot {bot_name}: invalid reference price")
             return None
         
-        # First: use ML validator
+        # First: use ML validator with volatility-aware checks
         is_valid, rejection_reason, val_stats = prediction_validator.validate_prediction(
-            series, reference_close, bot_name
+            series, reference_close, bot_name, recent_candles=recent_candles
         )
         
         if not is_valid:
@@ -273,7 +279,8 @@ class FreddyMerger:
                 continue
             
             if pred and pred.get("predicted_series") and pred.get("confidence", 0) > 0:
-                sanitized = self._sanitize_bot_prediction(pred, reference_close)
+                # Pass recent candles for volatility-aware validation
+                sanitized = self._sanitize_bot_prediction(pred, reference_close, recent_candles=candles[-50:])
                 if sanitized:
                     valid_predictions.append(sanitized)
                     sanitization_summary["retained"].append(bot.name)
@@ -346,7 +353,41 @@ class FreddyMerger:
         }
 
     def _compute_bot_weights(self, symbol: str, timeframe: str, regime: str) -> Dict[str, float]:
+        """
+        Compute bot weights using performance-based dynamic weighting.
+        
+        Formula: weight = base_weight * performance_score * recency_factor
+        """
         base_weights = REGIME_DEFAULT_WEIGHTS.get(regime, REGIME_DEFAULT_WEIGHTS["unknown"]).copy()
+        
+        # Get performance scores for all bots
+        performance_scores = model_performance_tracker.get_all_bot_scores(
+            symbol, timeframe, lookback_hours=24
+        )
+        
+        # Get recency factors
+        recency_factors = {}
+        for bot_name in base_weights.keys():
+            recency_factors[bot_name] = model_performance_tracker.get_recency_factor(
+                symbol, timeframe, bot_name, lookback_hours=24
+            )
+        
+        # Apply performance-based adjustments
+        adjusted_weights = {}
+        for bot_name, base_weight in base_weights.items():
+            performance_score = performance_scores.get(bot_name, 0.5)
+            recency_factor = recency_factors.get(bot_name, 0.5)
+            
+            # Calculate adjusted weight
+            # Formula: base_weight * performance_score * recency_factor
+            adjusted_weight = base_weight * performance_score * recency_factor
+            
+            # Ensure minimum weight (never completely exclude)
+            adjusted_weight = max(0.05, adjusted_weight)
+            
+            adjusted_weights[bot_name] = adjusted_weight
+        
+        # Also check registry for historical performance (legacy support)
         record = self.registry.find_best(symbol, timeframe)
         if record:
             for family, metrics in record.metrics.items():
@@ -355,12 +396,28 @@ class FreddyMerger:
                     continue
                 bonus = max(0.05, min(0.25, 1.0 / (rmse + 1e-3)))
                 for bot_name in FAMILY_TO_BOTS.get(family, []):
-                    base_weights[bot_name] = base_weights.get(bot_name, 0.05) + bonus
-
-        total = sum(base_weights.values())
+                    if bot_name in adjusted_weights:
+                        adjusted_weights[bot_name] += bonus * 0.3  # Smaller bonus from registry
+        
+        # Normalize weights
+        total = sum(adjusted_weights.values())
         if total == 0:
             return {bot: 1.0 / len(base_weights) for bot in base_weights}
-        return {bot: weight / total for bot, weight in base_weights.items()}
+        
+        normalized_weights = {bot: weight / total for bot, weight in adjusted_weights.items()}
+        
+        # Log weight distribution for debugging
+        logger.debug(
+            f"Bot weights for {symbol}/{timeframe}",
+            extra={
+                "regime": regime,
+                "weights": normalized_weights,
+                "performance_scores": performance_scores,
+                "recency_factors": recency_factors
+            }
+        )
+        
+        return normalized_weights
 
     def _merge_predictions(self, predictions: List[Dict], weights: Dict[str, float]) -> List[Dict]:
         timestamp_prices: Dict[str, List[Dict[str, float]]] = {}

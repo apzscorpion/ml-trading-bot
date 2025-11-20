@@ -15,6 +15,7 @@ from backend.ml.training import TrainingOrchestrator
 from backend.freddy_merger import freddy_merger
 from backend.utils.data_fetcher import data_fetcher
 from backend.websocket_manager import manager
+from backend.services.prediction_evaluator import prediction_evaluator
 import asyncio
 from backend.services.candle_loader import candle_loader
 
@@ -288,6 +289,20 @@ async def trigger_prediction(
     db.commit()
     db.refresh(prediction)
     
+    # Trigger evaluation in background (non-blocking)
+    try:
+        # Try to evaluate immediately if actual data is available
+        eval_result = prediction_evaluator.evaluate_prediction(prediction.id, db)
+        if eval_result:
+            logger.info(f"Immediate evaluation completed for prediction {prediction.id}")
+        else:
+            # Schedule background evaluation task
+            asyncio.create_task(_evaluate_prediction_background(prediction.id))
+    except Exception as e:
+        logger.warning(f"Error triggering evaluation for prediction {prediction.id}: {e}")
+        # Schedule background evaluation task as fallback
+        asyncio.create_task(_evaluate_prediction_background(prediction.id))
+    
     return {
         "prediction_id": prediction.id,
         "status": "completed",
@@ -295,17 +310,36 @@ async def trigger_prediction(
     }
 
 
+async def _evaluate_prediction_background(prediction_id: int):
+    """Background task to evaluate prediction"""
+    try:
+        from backend.database import get_db
+        db = next(get_db())
+        try:
+            prediction_evaluator.evaluate_prediction(prediction_id, db)
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error(f"Error in background evaluation for prediction {prediction_id}: {e}")
+
+
 @router.get("/latest")
 async def get_latest_prediction(
     symbol: str = Query(..., description="Stock symbol"),
     timeframe: str = Query("5m", description="Timeframe"),
+    prediction_type: Optional[str] = Query(None, description="Filter by prediction type (technical, ml, lstm, transformer, deep_learning, ensemble, all)"),
     db: Session = Depends(get_db)
 ):
-    """Get the latest prediction for a symbol"""
-    prediction = db.query(Prediction).filter(
+    """Get the latest prediction for a symbol, optionally filtered by prediction type"""
+    query = db.query(Prediction).filter(
         Prediction.symbol == symbol,
         Prediction.timeframe == timeframe
-    ).order_by(Prediction.produced_at.desc()).first()
+    )
+    
+    if prediction_type:
+        query = query.filter(Prediction.prediction_type == prediction_type)
+    
+    prediction = query.order_by(Prediction.produced_at.desc()).first()
     
     if not prediction:
         return {"error": "No predictions available", "symbol": symbol}

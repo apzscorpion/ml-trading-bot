@@ -833,11 +833,16 @@ const getHealthStatus = (model) => {
     return 'Failed';
   }
   
+  // Check if model was just trained (within last 5 minutes) - consider it fresh
+  if (ageHours < 0.083) { // 5 minutes
+    return 'Healthy';
+  }
+  
   if (ageHours > 48) {
     return 'Stale';
   }
   
-  if (ageHours < 24 && model.status === 'active' && model.test_rmse) {
+  if (ageHours < 24 && (model.status === 'active' || model.status === 'completed') && model.test_rmse !== undefined) {
     return 'Healthy';
   }
   
@@ -861,12 +866,23 @@ const getHealthDescription = (model) => {
     return 'Last training failed - retrain recommended';
   }
   
+  // Check if model was just trained (within last 5 minutes)
+  if (ageHours < 0.083) { // 5 minutes
+    const rmse = model.test_rmse != null && typeof model.test_rmse === 'number' 
+      ? model.test_rmse.toFixed(2) 
+      : 'N/A';
+    return `Just trained, RMSE: ₹${rmse}`;
+  }
+  
   if (ageHours > 48) {
     return 'Model is stale (>48h) - retrain recommended';
   }
   
-  if (ageHours < 24 && model.test_rmse) {
-    return `Fresh model, RMSE: ₹${model.test_rmse.toFixed(2)}`;
+  if (ageHours < 24 && (model.status === 'active' || model.status === 'completed')) {
+    if (model.test_rmse != null && typeof model.test_rmse === 'number') {
+      return `Fresh model, RMSE: ₹${model.test_rmse.toFixed(2)}`;
+    }
+    return 'Fresh model';
   }
   
   return 'Model OK';

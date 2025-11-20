@@ -141,6 +141,12 @@ class EnsembleBot(BaseBot):
             if len(features_df) < 10:
                 return self._fallback_prediction(candles, horizon_minutes, timeframe)
             
+            # Ensure all columns are numeric
+            features_df = features_df.select_dtypes(include=[np.number])
+            if features_df.empty:
+                logger.warning(f"{self.name} no numeric features available, using fallback")
+                return self._fallback_prediction(candles, horizon_minutes, timeframe)
+            
             # Get recent features (last lookback periods)
             recent_features = features_df.tail(self.lookback)
             
@@ -157,9 +163,14 @@ class EnsembleBot(BaseBot):
             # Ensure we have exactly lookback periods
             recent_features = recent_features.tail(self.lookback)
             
-            # Validate features are finite
-            if not np.isfinite(recent_features.values).all():
-                logger.warning(f"{self.name} found invalid values in features, using fallback")
+            # Convert to numeric array and validate features are finite
+            try:
+                feature_values = recent_features.values.astype(np.float64)
+                if not np.isfinite(feature_values).all():
+                    logger.warning(f"{self.name} found invalid values in features, using fallback")
+                    return self._fallback_prediction(candles, horizon_minutes, timeframe)
+            except (ValueError, TypeError) as e:
+                logger.warning(f"{self.name} error converting features to numeric: {e}, using fallback")
                 return self._fallback_prediction(candles, horizon_minutes, timeframe)
             
             # Check if scaler exists and has the right shape
@@ -177,7 +188,8 @@ class EnsembleBot(BaseBot):
                     return self._fallback_prediction(candles, horizon_minutes, timeframe)
                 else:
                     # Flatten BEFORE scaling (scaler expects flattened input)
-                    features_flat = recent_features.values.flatten().reshape(1, -1)
+                    # Ensure numeric types before flattening
+                    features_flat = feature_values.flatten().reshape(1, -1)
                     
                     # Validate features before scaling
                     if not np.isfinite(features_flat).all():
@@ -190,8 +202,8 @@ class EnsembleBot(BaseBot):
                     if not np.isfinite(features_scaled).all():
                         features_scaled = np.nan_to_num(features_scaled, nan=0.0, posinf=0.0, neginf=0.0)
             else:
-                # No scaler, just flatten
-                features_scaled = recent_features.values.flatten().reshape(1, -1)
+                # No scaler, just flatten (use already validated feature_values)
+                features_scaled = feature_values.flatten().reshape(1, -1)
             
             # X is already in the right shape (1, num_features)
             X = features_scaled
@@ -330,17 +342,34 @@ class EnsembleBot(BaseBot):
         return features_df
     
     def _fallback_prediction(self, candles: List[Dict], horizon_minutes: int, timeframe: str) -> Dict:
-        """Fallback prediction using statistical analysis"""
+        """Fallback prediction using recent statistical analysis"""
         try:
             df = pd.DataFrame(candles)
             last_close = float(df['close'].iloc[-1])
             
-            # Multiple trend indicators
-            short_ma = df['close'].tail(5).mean()
-            medium_ma = df['close'].tail(10).mean()
-            long_ma = df['close'].tail(20).mean()
-            
-            trend = (short_ma / long_ma - 1) * 0.5 + (medium_ma / long_ma - 1) * 0.3
+            # HYBRID APPROACH: Blend recent (5) and short-term (10) trends
+            if len(df) < 10:
+                trend = 0.0
+            else:
+                # Recent: last 5 candles
+                recent_5_avg = df['close'].tail(5).mean()
+                # Short-term: last 10 candles
+                recent_10_avg = df['close'].tail(10).mean()
+                # Baseline: last 15 candles
+                baseline_15_avg = df['close'].tail(15).mean() if len(df) >= 15 else recent_10_avg
+                
+                # Calculate trends from different windows
+                trend_5 = (recent_5_avg / recent_10_avg - 1) if recent_10_avg > 0 else 0
+                trend_10 = (recent_10_avg / baseline_15_avg - 1) if baseline_15_avg > 0 else 0
+                
+                # Blend: 40% recent, 60% short-term
+                trend = trend_5 * 0.4 + trend_10 * 0.6
+                
+                # Conservative extrapolation
+                trend = trend * 0.15  # Only 15% of observed trend
+                
+                # Clip to very conservative range
+                trend = np.clip(trend, -0.01, 0.01)  # Max ±1%
             
             last_ts = df['start_ts'].iloc[-1]
             if isinstance(last_ts, str):
@@ -352,8 +381,9 @@ class EnsembleBot(BaseBot):
             
             predicted_series = []
             for i, ts in enumerate(future_timestamps):
-                damping = 1.0 - (i / len(future_timestamps)) * 0.55
-                predicted_price = last_close * (1 + trend * damping * 0.45)
+                # Stronger damping for conservative predictions
+                damping = 1.0 - (i / len(future_timestamps)) * 0.75
+                predicted_price = last_close * (1 + trend * damping * 0.3)
                 predicted_series.append({
                     "ts": ts.isoformat(),
                     "price": float(predicted_price)
@@ -361,11 +391,12 @@ class EnsembleBot(BaseBot):
             
             return {
                 "predicted_series": predicted_series,
-                "confidence": 0.42,
+                "confidence": 0.35,  # Lower confidence for fallback
                 "bot_name": self.name,
                 "meta": {
                     "model_type": "fallback",
-                    "trend": float(trend)
+                    "trend": float(trend),
+                    "warning": "Models not trained - using fallback prediction"
                 }
             }
         except Exception as e:
@@ -421,16 +452,33 @@ class EnsembleBot(BaseBot):
             if len(features_df) < self.lookback + 20:
                 return {"error": f"Not enough data for training: {len(features_df)} < {self.lookback + 20}"}
             
-            # Prepare training data
-            X, y = [], []
-            for i in range(self.lookback, len(features_df) - 1):
-                X.append(features_df.iloc[i-self.lookback:i].values.flatten())
-                y.append(features_df['close'].iloc[i + 1])
+            # Prepare training data - ensure all data is numeric
+            # Convert to numeric, coercing errors to NaN
+            features_df_numeric = features_df.select_dtypes(include=[np.number])
+            if features_df_numeric.empty:
+                return {"error": "No numeric features available after feature engineering"}
             
-            X = np.array(X)
-            y = np.array(y)
+            # Ensure close column is numeric
+            if 'close' not in features_df_numeric.columns:
+                features_df_numeric['close'] = pd.to_numeric(features_df['close'], errors='coerce')
+            
+            X, y = [], []
+            for i in range(self.lookback, len(features_df_numeric) - 1):
+                feature_window = features_df_numeric.iloc[i-self.lookback:i]
+                # Flatten and ensure numeric
+                feature_values = feature_window.values.flatten()
+                # Convert to float and handle any remaining non-numeric
+                feature_values = pd.to_numeric(feature_values, errors='coerce')
+                X.append(feature_values)
+                
+                close_val = features_df_numeric['close'].iloc[i + 1]
+                y.append(float(pd.to_numeric(close_val, errors='coerce')))
+            
+            X = np.array(X, dtype=np.float64)
+            y = np.array(y, dtype=np.float64)
             
             # Remove rows with NaN, Inf, or extreme values
+            # Use np.isfinite which works with float64
             valid_mask = np.isfinite(X).all(axis=1) & np.isfinite(y)
             X = X[valid_mask]
             y = y[valid_mask]
