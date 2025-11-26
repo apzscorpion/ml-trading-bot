@@ -23,7 +23,13 @@ from backend.utils.indicators import (
     calculate_adx,
     calculate_mfi,
     calculate_obv,
-    calculate_vwap_intraday
+    calculate_obv,
+    calculate_vwap_intraday,
+    calculate_ichimoku,
+    calculate_cci,
+    calculate_williams_r,
+    calculate_psar,
+    calculate_keltner_channels
 )
 
 logger = logging.getLogger(__name__)
@@ -115,6 +121,30 @@ def engineer_comprehensive_features(
             if 'stoch_rsi_k' in features_df.columns:
                 features_df['stoch_rsi_overbought'] = (features_df['stoch_rsi_k'] > 80).astype(float)
                 features_df['stoch_rsi_oversold'] = (features_df['stoch_rsi_k'] < 20).astype(float)
+            
+            # Ichimoku Cloud
+            ichimoku = calculate_ichimoku(df)
+            features_df['ichimoku_conversion_line'] = ichimoku['tenkan_sen']
+            features_df['ichimoku_base_line'] = ichimoku['kijun_sen']
+            features_df['ichimoku_leading_span_a'] = ichimoku['senkou_span_a']
+            features_df['ichimoku_leading_span_b'] = ichimoku['senkou_span_b']
+            
+            # CCI
+            features_df['cci'] = calculate_cci(df)
+            
+            # Williams %R
+            features_df['williams_r'] = calculate_williams_r(df)
+            
+            # Parabolic SAR
+            psar = calculate_psar(df)
+            features_df['psar'] = psar['psar']
+            features_df['psar_direction'] = psar['psar_direction']
+            
+            # Keltner Channels
+            kc = calculate_keltner_channels(df)
+            features_df['kc_upper'] = kc['upper']
+            features_df['kc_lower'] = kc['lower']
+            features_df['kc_middle'] = kc['middle']
             
         except Exception as e:
             logger.error(f"Error calculating technical indicators: {e}")
@@ -255,7 +285,11 @@ def get_feature_columns(
             'rsi_overbought', 'rsi_oversold',
             'macd_bullish', 'macd_bearish',
             'bb_position', 'bb_squeeze',
-            'stoch_rsi_overbought', 'stoch_rsi_oversold'
+            'stoch_rsi_overbought', 'stoch_rsi_oversold',
+            'ichimoku_conversion_line', 'ichimoku_base_line',
+            'ichimoku_leading_span_a', 'ichimoku_leading_span_b',
+            'cci', 'williams_r', 'psar', 'psar_direction',
+            'kc_upper', 'kc_lower', 'kc_middle'
         ])
     
     if include_volume_features:

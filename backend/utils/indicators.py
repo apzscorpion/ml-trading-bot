@@ -402,6 +402,7 @@ def calculate_all_indicators(candles: List[Dict]) -> pd.DataFrame:
     return df
 
 
+
 def get_latest_indicators(df: pd.DataFrame) -> Dict:
     """
     Get the latest values of all indicators.
@@ -424,4 +425,116 @@ def get_latest_indicators(df: pd.DataFrame) -> Dict:
             indicators[col] = float(value) if pd.notna(value) else None
     
     return indicators
+
+
+def calculate_ichimoku(df: pd.DataFrame) -> Dict[str, pd.Series]:
+    """
+    Calculate Ichimoku Cloud components.
+    
+    Returns:
+        Dictionary with Tenkan, Kijun, Span A, Span B, Chikou
+    """
+    # Tenkan-sen (Conversion Line): (9-period high + 9-period low)/2
+    high_9 = df['high'].rolling(window=9).max()
+    low_9 = df['low'].rolling(window=9).min()
+    tenkan_sen = (high_9 + low_9) / 2
+
+    # Kijun-sen (Base Line): (26-period high + 26-period low)/2
+    high_26 = df['high'].rolling(window=26).max()
+    low_26 = df['low'].rolling(window=26).min()
+    kijun_sen = (high_26 + low_26) / 2
+
+    # Senkou Span A (Leading Span A): (Conversion Line + Base Line)/2
+    senkou_span_a = ((tenkan_sen + kijun_sen) / 2).shift(26)
+
+    # Senkou Span B (Leading Span B): (52-period high + 52-period low)/2
+    high_52 = df['high'].rolling(window=52).max()
+    low_52 = df['low'].rolling(window=52).min()
+    senkou_span_b = ((high_52 + low_52) / 2).shift(26)
+
+    # Chikou Span (Lagging Span): Close shifted back 26 periods
+    chikou_span = df['close'].shift(-26)
+
+    return {
+        'tenkan_sen': tenkan_sen,
+        'kijun_sen': kijun_sen,
+        'senkou_span_a': senkou_span_a,
+        'senkou_span_b': senkou_span_b,
+        'chikou_span': chikou_span
+    }
+
+
+def calculate_cci(df: pd.DataFrame, length: int = 14) -> pd.Series:
+    """Calculate Commodity Channel Index (CCI)"""
+    return ta.cci(df['high'], df['low'], df['close'], length=length)
+
+
+def calculate_williams_r(df: pd.DataFrame, length: int = 14) -> pd.Series:
+    """Calculate Williams %R"""
+    return ta.willr(df['high'], df['low'], df['close'], length=length)
+
+
+def calculate_psar(df: pd.DataFrame) -> Dict[str, pd.Series]:
+    """
+    Calculate Parabolic SAR.
+    
+    Returns:
+        Dictionary with 'psar' (value) and 'psar_direction' (1 for long, -1 for short)
+    """
+    # pandas-ta psar returns columns like PSARl_0.02_0.2, PSARs_0.02_0.2, PSARaf_0.02_0.2, PSARr_0.02_0.2
+    psar = ta.psar(df['high'], df['low'], df['close'])
+    
+    if psar is None or psar.empty:
+        return {
+            'psar': pd.Series(dtype=float),
+            'psar_direction': pd.Series(dtype=float)
+        }
+        
+    # Find the columns (names can vary)
+    # Usually: PSARl (long), PSARs (short), PSARaf (acceleration), PSARr (reversal)
+    # We want a combined series
+    
+    # Combine long and short into one series
+    # If PSARl is NaN, use PSARs, and vice versa
+    long_col = [c for c in psar.columns if c.startswith('PSARl')][0]
+    short_col = [c for c in psar.columns if c.startswith('PSARs')][0]
+    
+    combined_psar = psar[long_col].fillna(psar[short_col])
+    
+    # Direction: 1 if close > psar, -1 if close < psar
+    direction = np.where(df['close'] > combined_psar, 1.0, -1.0)
+    
+    return {
+        'psar': combined_psar,
+        'psar_direction': pd.Series(direction, index=df.index)
+    }
+
+
+def calculate_keltner_channels(df: pd.DataFrame, length: int = 20, mult: float = 2.0) -> Dict[str, pd.Series]:
+    """
+    Calculate Keltner Channels.
+    
+    Returns:
+        Dictionary with 'upper', 'middle', 'lower'
+    """
+    kc = ta.kc(df['high'], df['low'], df['close'], length=length, scalar=mult)
+    
+    if kc is None or kc.empty:
+        return {
+            'upper': pd.Series(dtype=float),
+            'middle': pd.Series(dtype=float),
+            'lower': pd.Series(dtype=float)
+        }
+        
+    # Column names usually: KCLe_20_2, KCBe_20_2, KCUe_20_2 (Lower, Basis, Upper)
+    lower_col = [c for c in kc.columns if c.startswith('KCL')][0]
+    basis_col = [c for c in kc.columns if c.startswith('KCB')][0]
+    upper_col = [c for c in kc.columns if c.startswith('KCU')][0]
+    
+    return {
+        'upper': kc[upper_col],
+        'middle': kc[basis_col],
+        'lower': kc[lower_col]
+    }
+
 

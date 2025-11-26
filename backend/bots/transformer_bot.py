@@ -38,104 +38,50 @@ from backend.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-class TransformerBlock(layers.Layer):
-    """Transformer block with multi-head attention"""
-    
-    def __init__(self, *args, **kwargs):
-        # Completely flexible signature to handle Keras model loading
-        # Keras may pass arguments in various formats during model reconstruction
-        
-        # Extract parameters from kwargs first
-        embed_dim = kwargs.pop('embed_dim', None)
-        num_heads = kwargs.pop('num_heads', None)
-        ff_dim = kwargs.pop('ff_dim', None)
-        rate = kwargs.pop('rate', 0.1)
-        
-        # Handle positional arguments (for backward compatibility)
-        # Original calls: TransformerBlock(embed_dim, num_heads, ff_dim, rate)
-        if len(args) >= 1 and embed_dim is None:
-            embed_dim = args[0]
-        if len(args) >= 2 and num_heads is None:
-            num_heads = args[1]
-        if len(args) >= 3 and ff_dim is None:
-            ff_dim = args[2]
-        if len(args) >= 4:
-            rate = args[3]
-        
-        # Validate required parameters
-        if embed_dim is None or num_heads is None or ff_dim is None:
-            # Try to get from config if it's in kwargs
-            config = kwargs.get('config', {})
-            if isinstance(config, dict):
-                embed_dim = embed_dim or config.get('embed_dim')
-                num_heads = num_heads or config.get('num_heads')
-                ff_dim = ff_dim or config.get('ff_dim')
-                rate = config.get('rate', rate)
-        
-        # Final validation
-        if embed_dim is None or num_heads is None or ff_dim is None:
-            raise ValueError(f"TransformerBlock requires embed_dim, num_heads, and ff_dim. Got args={args}, kwargs_keys={list(kwargs.keys())}")
-        
-        # Filter out Keras internal kwargs that shouldn't be passed to parent
-        filtered_kwargs = {k: v for k, v in kwargs.items() if k not in ['trainable', 'name', 'dtype', 'batch_input_shape', 'input_shape']}
-        super().__init__(**filtered_kwargs)
-        
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.ff_dim = ff_dim
-        self.rate = rate
-        self.att = layers.MultiHeadAttention(num_heads=num_heads, key_dim=embed_dim)
-        self.ffn = keras.Sequential([
-            layers.Dense(ff_dim, activation="relu"),
-            layers.Dense(embed_dim),
-        ])
-        self.layernorm1 = layers.LayerNormalization(epsilon=1e-6)
-        self.layernorm2 = layers.LayerNormalization(epsilon=1e-6)
-        self.dropout1 = layers.Dropout(rate)
-        self.dropout2 = layers.Dropout(rate)
 
-    def get_config(self):
-        """Get config for serialization"""
-        config = super().get_config()
-        config.update({
-            'embed_dim': self.embed_dim,
-            'num_heads': self.num_heads,
-            'ff_dim': self.ff_dim,
-            'rate': self.rate,
-        })
-        return config
+if TENSORFLOW_AVAILABLE:
+    class TransformerBlock(layers.Layer):
+        """
+        Transformer Block with Multi-Head Attention and Feed Forward Network
+        """
+        def __init__(self, embed_dim, num_heads, ff_dim, rate=0.1, **kwargs):
+            super(TransformerBlock, self).__init__(**kwargs)
+            self.embed_dim = embed_dim
+            self.num_heads = num_heads
+            self.ff_dim = ff_dim
+            self.rate = rate
+            
+            self.att = layers.MultiHeadAttention(num_heads=num_heads, key_dim=embed_dim)
+            self.ffn = keras.Sequential([
+                layers.Dense(ff_dim, activation="relu"),
+                layers.Dense(embed_dim),
+            ])
+            self.layernorm1 = layers.LayerNormalization(epsilon=1e-6)
+            self.layernorm2 = layers.LayerNormalization(epsilon=1e-6)
+            self.dropout1 = layers.Dropout(rate)
+            self.dropout2 = layers.Dropout(rate)
 
-    @classmethod
-    def from_config(cls, config):
-        """Create instance from config (handles both old and new formats)"""
-        # Make a copy to avoid mutating the original
-        config = config.copy() if isinstance(config, dict) else dict(config)
+        def call(self, inputs, training=False):
+            attn_output = self.att(inputs, inputs)
+            attn_output = self.dropout1(attn_output, training=training)
+            out1 = self.layernorm1(inputs + attn_output)
+            
+            ffn_output = self.ffn(out1)
+            ffn_output = self.dropout2(ffn_output, training=training)
+            return self.layernorm2(out1 + ffn_output)
         
-        # Extract our custom parameters
-        embed_dim = config.pop('embed_dim', None)
-        num_heads = config.pop('num_heads', None)
-        ff_dim = config.pop('ff_dim', None)
-        rate = config.pop('rate', 0.1)
-        
-        # If any required params are missing, raise error
-        if embed_dim is None or num_heads is None or ff_dim is None:
-            raise ValueError(f"Missing required parameters in config: embed_dim={embed_dim}, num_heads={num_heads}, ff_dim={ff_dim}")
-        
-        # Remove Keras internal params that shouldn't be passed to __init__
-        # These are handled by the parent Layer class
-        for key in ['trainable', 'name', 'dtype', 'batch_input_shape', 'input_shape']:
-            config.pop(key, None)
-        
-        # Create instance with keyword arguments only
-        return cls(embed_dim=embed_dim, num_heads=num_heads, ff_dim=ff_dim, rate=rate, **config)
-
-    def call(self, inputs, training=None):
-        attn_output = self.att(inputs, inputs)
-        attn_output = self.dropout1(attn_output, training=training)
-        out1 = self.layernorm1(inputs + attn_output)
-        ffn_output = self.ffn(out1)
-        ffn_output = self.dropout2(ffn_output, training=training)
-        return self.layernorm2(out1 + ffn_output)
+        def get_config(self):
+            config = super(TransformerBlock, self).get_config()
+            config.update({
+                "embed_dim": self.embed_dim,
+                "num_heads": self.num_heads,
+                "ff_dim": self.ff_dim,
+                "rate": self.rate,
+            })
+            return config
+else:
+    class TransformerBlock:
+        pass
 
 
 class TransformerBot(BaseBot):
@@ -165,117 +111,55 @@ class TransformerBot(BaseBot):
             old_model_path = model_path.replace('.keras', '.h5')
             
             if os.path.exists(model_path) and os.path.exists(scaler_path):
-                # Custom objects needed for loading
-                custom_objects = {'TransformerBlock': TransformerBlock}
+                custom_objects = {"TransformerBlock": TransformerBlock}
                 self.model = keras.models.load_model(model_path, custom_objects=custom_objects)
-            elif os.path.exists(old_model_path) and os.path.exists(scaler_path):
-                # Load old .h5 format and migrate to .keras
-                logger.info(f"{self.name} loading legacy .h5 model, will migrate to .keras format")
-                custom_objects = {'TransformerBlock': TransformerBlock}
-                self.model = keras.models.load_model(old_model_path, custom_objects=custom_objects)
-                # Save in new format and remove old file
-                os.makedirs(os.path.dirname(model_path), exist_ok=True)
-                # Explicitly save in Keras format (not HDF5)
-                if model_path.endswith('.keras'):
-                    self.model.save(model_path, save_format='keras')
-                else:
-                    self.model.save(model_path)
-                try:
-                    os.remove(old_model_path)
-                    logger.info(f"{self.name} migrated model from .h5 to .keras format")
-                except Exception as e:
-                    logger.warning(f"{self.name} could not remove old .h5 file: {e}")
-                # CRITICAL: Recompile immediately after loading to reset optimizer state
-                # This prevents "Unknown variable" errors when training loaded models
-                try:
-                    # Always recompile to reset optimizer state
-                    self.model.compile(
-                        optimizer=keras.optimizers.Adam(learning_rate=0.001),
-                        loss='huber',
-                        metrics=['mae']
-                    )
-                except Exception as compile_error:
-                    # If compilation fails, log warning but continue
-                    # The model will be recompiled during training anyway
-                    logger.warning(f"{self.name} recompilation warning: {compile_error}, will recompile during training")
+                
+                self.model.compile(
+                    optimizer=keras.optimizers.Adam(learning_rate=0.0005),
+                    loss='huber',
+                    metrics=['mae']
+                )
+                
                 with open(scaler_path, 'rb') as f:
-                    self.scaler = pickle.load(f)
-                logger.info(f"{self.name} loaded existing model and recompiled optimizer")
+                    scalers = pickle.load(f)
+                    self.scaler_X = scalers['scaler_X']
+                    self.scaler_y = scalers['scaler_y']
+                logger.info(f"{self.name} loaded existing model")
             else:
                 self._create_model()
                 logger.info(f"{self.name} created new model")
-        except (TypeError, ValueError) as e:
-            # Model file is incompatible (likely from old code version)
-            # Delete it and create a new one
-            logger.warning(f"{self.name} model file incompatible (likely from old version): {e}")
-            try:
-                model_path = self.get_model_path(self.model_path)
-                old_model_path = model_path.replace('.keras', '.h5')
-                scaler_path = self.get_model_path(self.scaler_path)
-                if os.path.exists(model_path):
-                    os.remove(model_path)
-                    logger.info(f"{self.name} deleted incompatible model file")
-                if os.path.exists(old_model_path):
-                    os.remove(old_model_path)
-                    logger.info(f"{self.name} deleted incompatible legacy .h5 model file")
-                if os.path.exists(scaler_path):
-                    os.remove(scaler_path)
-                    logger.info(f"{self.name} deleted incompatible scaler file")
-            except Exception as cleanup_error:
-                logger.warning(f"{self.name} error cleaning up old files: {cleanup_error}")
-            self._create_model()
-            logger.info(f"{self.name} created new model after removing incompatible files")
         except Exception as e:
-            logger.error(
-                f"{self.name} error loading model",
-                error=str(e),
-                error_type=type(e).__name__,
-                exc_info=True
-            )
-            logger.warning(f"{self.name} creating new model due to load error")
+            logger.error(f"{self.name} error loading model: {e}")
             self._create_model()
     
-    def _create_model(self, n_features: int = 20):
-        """Create a new Transformer model
-        
-        Args:
-            n_features: Number of input features (default: 20 for backward compatibility)
-        """
+    def _create_model(self, n_features: int = 25):
+        """Create a new Deep Transformer model"""
         if not TENSORFLOW_AVAILABLE:
             return
         
-        embed_dim = 32
-        num_heads = 4
-        ff_dim = 64
-        
-        # Updated to handle more features (will be determined dynamically during training)
         inputs = layers.Input(shape=(self.sequence_length, n_features))
         
-        # Position encoding
-        positions = tf.range(start=0, limit=self.sequence_length, delta=1)
-        position_embedding = layers.Embedding(
-            input_dim=self.sequence_length, output_dim=embed_dim
-        )(positions)
+        # Embedding projection
+        x = layers.Dense(64)(inputs)
         
-        # Project input features
-        x = layers.Dense(embed_dim)(inputs)
-        x = x + position_embedding
+        # 4 Transformer Blocks (Deeper architecture)
+        for _ in range(4):
+            x = TransformerBlock(embed_dim=64, num_heads=8, ff_dim=128)(x)
         
-        # Transformer blocks
-        x = TransformerBlock(embed_dim, num_heads, ff_dim)(x)
-        x = TransformerBlock(embed_dim, num_heads, ff_dim)(x)
-        
-        # Global pooling
+        # Global Average Pooling
         x = layers.GlobalAveragePooling1D()(x)
         
-        # Dense layers
-        x = layers.Dense(64, activation="relu")(x)
-        x = layers.Dropout(0.3)(x)
-        x = layers.Dense(32, activation="relu")(x)
+        # Regularization and Output
+        x = layers.LayerNormalization(epsilon=1e-6)(x)
         x = layers.Dropout(0.2)(x)
+        x = layers.Dense(64, activation="relu")(x)
+        x = layers.Dropout(0.2)(x)
+        x = layers.Dense(32, activation="relu")(x)
+        
         outputs = layers.Dense(1)(x)
         
         model = keras.Model(inputs=inputs, outputs=outputs)
+        
         model.compile(
             optimizer=keras.optimizers.Adam(learning_rate=0.0005),
             loss='huber',
@@ -284,9 +168,10 @@ class TransformerBot(BaseBot):
         
         self.model = model
         
-        # Initialize scaler
+        # Initialize scalers (RobustScaler is better for outliers)
         from sklearn.preprocessing import RobustScaler
-        self.scaler = RobustScaler()
+        self.scaler_X = RobustScaler()
+        self.scaler_y = RobustScaler()
     
     def _create_model_with_features(self, n_features: int):
         """Create a new model with specified feature count"""
@@ -299,52 +184,41 @@ class TransformerBot(BaseBot):
         timeframe: str
     ) -> Dict:
         """Generate Transformer-based prediction"""
-        
         try:
             if not TENSORFLOW_AVAILABLE or self.model is None:
                 return self._fallback_prediction(candles, horizon_minutes, timeframe)
             
             if len(candles) < self.sequence_length:
-                logger.warning(f"{self.name} needs at least {self.sequence_length} candles")
                 return self._fallback_prediction(candles, horizon_minutes, timeframe)
             
-            # Prepare data
             df = pd.DataFrame(candles)
             features = self._prepare_features(df)
             
             if len(features) < self.sequence_length:
                 return self._fallback_prediction(candles, horizon_minutes, timeframe)
             
-            # Get last sequence
             last_sequence = features[-self.sequence_length:].values
-            
-            # Get actual feature count
             actual_n_features = last_sequence.shape[1]
             
-            # CRITICAL: Check if model input shape matches actual feature count
             try:
                 model_input_shape = self.model.input_shape
-                if model_input_shape:
-                    expected_features = model_input_shape[2] if len(model_input_shape) == 3 else model_input_shape[1]
-                    
-                    if expected_features != actual_n_features:
-                        logger.warning(
-                            f"{self.name} FEATURE MISMATCH during prediction: model expects {expected_features} features, "
-                            f"but data has {actual_n_features} features. Recreating model and using fallback..."
-                        )
-                        # Recreate model with correct shape for next time
-                        self._create_model_with_features(actual_n_features)
-                        # Use fallback for this prediction
-                        return self._fallback_prediction(candles, horizon_minutes, timeframe)
-            except (AttributeError, IndexError, TypeError) as e:
-                logger.warning(f"{self.name} could not check model input shape: {e}")
+                expected_features = model_input_shape[2] if len(model_input_shape) == 3 else model_input_shape[1]
+                
+                if expected_features != actual_n_features:
+                    logger.warning(f"{self.name} feature mismatch: expected {expected_features}, got {actual_n_features}. Recreating model.")
+                    self._create_model_with_features(actual_n_features)
+                    return self._fallback_prediction(candles, horizon_minutes, timeframe)
+            except Exception:
+                pass
             
             # Normalize
             last_sequence_scaled = last_sequence.copy()
-            if hasattr(self.scaler, 'center_'):
-                last_sequence_scaled = self.scaler.transform(last_sequence)
+            if hasattr(self.scaler_X, 'center_'):
+                last_sequence_scaled = self.scaler_X.transform(last_sequence)
             
-            # Generate predictions
+            # Predict
+            last_sequence_scaled = last_sequence_scaled.reshape(1, self.sequence_length, -1)
+            
             predicted_series = []
             current_sequence = last_sequence_scaled.copy()
             
@@ -358,27 +232,19 @@ class TransformerBot(BaseBot):
                 last_ts, timeframe, horizon_minutes
             )
             
-            confidence_base = 0.78
+            confidence_base = 0.80
             
             for i, ts in enumerate(future_timestamps):
-                # Predict next price
-                input_seq = current_sequence.reshape(1, self.sequence_length, -1)
-                prediction_scaled = self.model.predict(input_seq, verbose=0)[0][0]
+                prediction_scaled = self.model.predict(current_sequence, verbose=0)
                 
-                # Denormalize
-                if hasattr(self.scaler, 'center_'):
-                    # Inverse transform for close price (assuming it's the 4th feature)
-                    dummy = np.zeros((1, features.shape[1]))
-                    dummy[0, 3] = prediction_scaled
-                    prediction = self.scaler.inverse_transform(dummy)[0, 3]
+                if hasattr(self.scaler_y, 'center_'):
+                    prediction = self.scaler_y.inverse_transform(prediction_scaled)[0][0]
                 else:
-                    prediction = prediction_scaled
+                    prediction = prediction_scaled[0][0]
                 
-                # Apply constraints
-                max_change = 0.015 * (1 + i / len(future_timestamps))
-                change_ratio = (prediction - last_close) / last_close
-                change_ratio = np.clip(change_ratio, -max_change, max_change)
-                predicted_price = last_close * (1 + change_ratio)
+                # Dynamic constraints
+                max_change = 0.025 * (1 + i / len(future_timestamps))
+                predicted_price = last_close * (1 + np.clip(prediction / last_close - 1, -max_change, max_change))
                 
                 predicted_series.append({
                     "ts": ts.isoformat(),
@@ -386,22 +252,26 @@ class TransformerBot(BaseBot):
                 })
                 
                 # Update sequence
-                new_features = np.array([[
-                    predicted_price, predicted_price, predicted_price, 
-                    predicted_price, 0, 0, 0
-                ]])
-                if hasattr(self.scaler, 'center_'):
-                    new_features = self.scaler.transform(new_features)
+                new_features = np.zeros((1, 1, actual_n_features))
+                new_features[0, 0, :] = current_sequence[0, -1, :]
+                # Update price (approximate)
+                # Assuming first 4 are OHLC
+                if hasattr(self.scaler_X, 'center_'):
+                    # RobustScaler uses center_ and scale_
+                    new_features[0, 0, 3] = (predicted_price - self.scaler_X.center_[3]) / self.scaler_X.scale_[3]
                 
-                current_sequence = np.vstack([current_sequence[1:], new_features[0]])
+                current_sequence = np.concatenate([
+                    current_sequence[:, 1:, :],
+                    new_features
+                ], axis=1)
+                
                 last_close = predicted_price
             
             # Calculate confidence
             returns = df['close'].pct_change().dropna()
             volatility = float(returns.std())
-            confidence = confidence_base * (1 - min(volatility * 8, 0.3))
+            confidence = confidence_base * (1 - min(volatility * 8, 0.4))
             
-            # Generate trend metadata
             trend_metadata = self._generate_trend_metadata(predicted_series, timeframe)
             
             return {
@@ -409,8 +279,7 @@ class TransformerBot(BaseBot):
                 "confidence": confidence,
                 "bot_name": self.name,
                 "meta": {
-                    "model_type": "Transformer",
-                    "attention_heads": 4,
+                    "model_type": "DeepTransformer",
                     "sequence_length": self.sequence_length,
                     "volatility": volatility,
                     **trend_metadata
@@ -418,19 +287,13 @@ class TransformerBot(BaseBot):
             }
             
         except Exception as e:
-            logger.error(
-                f"{self.name} prediction error",
-                error=str(e),
-                error_type=type(e).__name__,
-                exc_info=True
-            )
+            logger.error(f"{self.name} prediction error: {e}", exc_info=True)
             return self._fallback_prediction(candles, horizon_minutes, timeframe)
     
     def _prepare_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Prepare comprehensive features including technical indicators and volume"""
+        """Prepare comprehensive features for Transformer model"""
         from backend.utils.feature_engineering import engineer_comprehensive_features
         
-        # Use comprehensive feature engineering
         features_df = engineer_comprehensive_features(
             df,
             include_indicators=True,
@@ -439,63 +302,41 @@ class TransformerBot(BaseBot):
             include_returns_features=True
         )
         
-        # Select key features for Transformer (attention mechanism benefits from rich features)
+        # Expanded feature set for Transformer
+        # Transformer handles high dimensionality well
         key_features = [
             'open', 'high', 'low', 'close', 'volume',
-            'rsi_14', 'macd', 'macd_signal',
+            'rsi_14', 'macd', 'macd_signal', 'macd_histogram',
             'stoch_rsi_k', 'stoch_rsi_d',
-            'bb_position', 'atr_14',
-            'volume_ratio_20', 'obv_ratio', 'mfi_14',
+            'bb_upper', 'bb_lower', 'bb_position', 'bb_squeeze',
+            'atr_14', 'adx',
+            'ichimoku_conversion_line', 'ichimoku_base_line',
+            'ichimoku_leading_span_a', 'ichimoku_leading_span_b',
+            'cci', 'williams_r', 'psar',
+            'kc_upper', 'kc_lower',
+            'volume_ratio_20', 'obv', 'mfi_14',
             'momentum_10', 'volatility_10', 'returns_5',
             'sma_20', 'ema_21'
         ]
         
-        # Only include columns that exist
         available_features = [col for col in key_features if col in features_df.columns]
         
         if len(available_features) < 5:
-            # Fallback to basic OHLCV + returns + volatility
-            features = pd.DataFrame()
-            features['open'] = df['open']
-            features['high'] = df['high']
-            features['low'] = df['low']
-            features['close'] = df['close']
-            features['volume'] = df['volume']
-            features['returns'] = df['close'].pct_change()
-            features['volatility'] = features['returns'].rolling(window=10).std()
-            return features.bfill().fillna(0)
+            return df[['open', 'high', 'low', 'close', 'volume']].dropna()
         
-        return features_df[available_features].bfill().fillna(0)
+        return features_df[available_features].dropna()
     
     def _fallback_prediction(self, candles: List[Dict], horizon_minutes: int, timeframe: str) -> Dict:
-        """Fallback prediction using recent momentum analysis"""
+        """Fallback prediction using recent trend analysis"""
         try:
             df = pd.DataFrame(candles)
             last_close = float(df['close'].iloc[-1])
             
-            # HYBRID APPROACH: Blend immediate (last 5) and short-term (last 10) momentum
             if len(df) < 10:
-                momentum = 0.0
+                trend = 0.0
             else:
-                # Immediate: last 5 candles
-                recent_5 = df['close'].tail(5).mean()
-                # Short-term: last 10 candles
-                recent_10 = df['close'].tail(10).mean()
-                # Baseline: last 15 candles
-                baseline_15 = df['close'].tail(15).mean() if len(df) >= 15 else recent_10
-                
-                # Calculate momentum from different windows
-                momentum_5 = (recent_5 - recent_10) / recent_10 if recent_10 > 0 else 0
-                momentum_10 = (recent_10 - baseline_15) / baseline_15 if baseline_15 > 0 else 0
-                
-                # Blend: 40% immediate, 60% short-term
-                momentum = momentum_5 * 0.4 + momentum_10 * 0.6
-                
-                # Conservative extrapolation
-                momentum = momentum * 0.15  # Only 15% of observed momentum
-                
-                # Clip to very conservative range
-                momentum = np.clip(momentum, -0.01, 0.01)  # Max ±1%
+                trend = (df['close'].iloc[-1] - df['close'].iloc[-10]) / df['close'].iloc[-10]
+                trend = np.clip(trend * 0.2, -0.01, 0.01)
             
             last_ts = df['start_ts'].iloc[-1]
             if isinstance(last_ts, str):
@@ -507,9 +348,7 @@ class TransformerBot(BaseBot):
             
             predicted_series = []
             for i, ts in enumerate(future_timestamps):
-                # Stronger damping for more conservative predictions
-                damping = 1.0 - (i / len(future_timestamps)) * 0.8
-                predicted_price = last_close * (1 + momentum * damping * 0.3)
+                predicted_price = last_close * (1 + trend * (i + 1) / len(future_timestamps))
                 predicted_series.append({
                     "ts": ts.isoformat(),
                     "price": float(predicted_price)
@@ -517,234 +356,98 @@ class TransformerBot(BaseBot):
             
             return {
                 "predicted_series": predicted_series,
-                "confidence": 0.35,  # Lower confidence for fallback
+                "confidence": 0.30,
                 "bot_name": self.name,
-                "meta": {
-                    "model_type": "fallback",
-                    "momentum": float(momentum),
-                    "warning": "Model failed - using fallback prediction"
-                }
+                "meta": {"model_type": "fallback", "warning": "Using fallback"}
             }
-        except Exception as e:
-            logger.error(f"{self.name} fallback error: {e}")
+        except Exception:
             return self._empty_prediction()
-    
+
     def _empty_prediction(self) -> Dict:
-        """Return empty prediction on error"""
         return {
             "predicted_series": [],
             "confidence": 0.0,
             "bot_name": self.name,
             "meta": {"error": "prediction_failed"}
         }
-    
-    async def train(self, candles: List[Dict], epochs: int = 30):
+
+    async def train(self, candles: List[Dict], epochs: int = 50):
         """Train the Transformer model"""
         if not TENSORFLOW_AVAILABLE or self.model is None:
-            logger.error(f"{self.name} cannot train without TensorFlow")
             return {"error": "TensorFlow not available"}
         
         try:
-            from datetime import datetime
-            import hashlib
-            from backend.ml.data_loader import ml_data_loader
-            
-            # Use unified data loader if symbol/timeframe context is available
-            if hasattr(self, '_current_symbol') and hasattr(self, '_current_timeframe'):
-                df_loaded, metadata = await ml_data_loader.get_training_window(
-                    self._current_symbol,
-                    self._current_timeframe,
-                    days=90
-                )
-                
-                if df_loaded is None:
-                    logger.error(f"{self.name} data loader failed: {metadata}")
-                    return {"error": metadata.get("message", "Data loading failed")}
-                
-                df = df_loaded
-                logger.info(f"{self.name} loaded {len(df)} candles via data_loader", extra=metadata)
-            else:
-                # Fallback to legacy candle list
-                df = pd.DataFrame(candles)
-                logger.warning(f"{self.name} using legacy candle list (no context set)")
-            
+            df = pd.DataFrame(candles)
             features = self._prepare_features(df)
             
             if len(features) < self.sequence_length + 10:
-                return {"error": f"Not enough data for training: {len(features)} < {self.sequence_length + 10}"}
+                return {"error": "Not enough data"}
             
-            # Get actual feature count from prepared features
             n_features = features.shape[1]
             
-            # CRITICAL: Check if model input shape matches actual feature count
-            # If not, recreate the model with correct input shape
             try:
                 model_input_shape = self.model.input_shape
-                if model_input_shape:
-                    expected_features = model_input_shape[2] if len(model_input_shape) == 3 else model_input_shape[1]
-                    
-                    if expected_features != n_features:
-                        logger.warning(
-                            f"{self.name} model input shape mismatch: model expects {expected_features} features, "
-                            f"but data has {n_features} features. Recreating model..."
-                        )
-                        # Recreate model with correct input shape
-                        self._create_model_with_features(n_features)
-            except (AttributeError, IndexError, TypeError) as e:
-                logger.warning(f"{self.name} could not check model input shape: {e}. Recreating model...")
+                expected_features = model_input_shape[2] if len(model_input_shape) == 3 else model_input_shape[1]
+                if expected_features != n_features:
+                    self._create_model_with_features(n_features)
+            except Exception:
                 self._create_model_with_features(n_features)
             
-            # Generate model version
-            data_hash = hashlib.md5(str(len(candles)).encode()).hexdigest()[:8]
-            timestamp = datetime.utcnow().strftime("%Y%m%d")
-            model_version = f"v1.0.{timestamp}"
-            dataset_version = f"dataset_v1_{data_hash}"
-            training_start = candles[0].get("start_ts") if candles else None
-            training_end = candles[-1].get("start_ts") if candles else None
-            training_window = f"{training_start}_{training_end}"
-            
-            hyperparams = {
-                "epochs": epochs,
-                "batch_size": 16,
-                "sequence_length": self.sequence_length,
-                "learning_rate": 0.0005,
-                "loss": "huber",
-                "optimizer": "Adam",
-                "attention_heads": 4,
-                "n_features": n_features
-            }
-            
-            # Prepare sequences - ensure numeric types
             X, y = [], []
             for i in range(self.sequence_length, len(features)):
-                feature_values = features.iloc[i-self.sequence_length:i].values
-                # Ensure numeric types
-                feature_values = pd.DataFrame(feature_values).select_dtypes(include=[np.number]).values
-                if feature_values.shape[1] != n_features:
-                    # If some columns were dropped, pad or truncate
-                    if feature_values.shape[1] < n_features:
-                        padding = np.zeros((feature_values.shape[0], n_features - feature_values.shape[1]))
-                        feature_values = np.hstack([feature_values, padding])
-                    else:
-                        feature_values = feature_values[:, :n_features]
-                X.append(feature_values)
+                X.append(features.iloc[i-self.sequence_length:i].values)
                 y.append(float(features['close'].iloc[i]))
             
             X = np.array(X, dtype=np.float32)
             y = np.array(y, dtype=np.float32).reshape(-1, 1)
-
-            # Ensure scaler is initialised (legacy models may not have scaler persisted)
-            if self.scaler is None:
+            
+            if self.scaler_X is None:
                 from sklearn.preprocessing import RobustScaler
-                logger.warning(f"{self.name} scaler missing before training – reinitialising RobustScaler()")
-                self.scaler = RobustScaler()
+                self.scaler_X = RobustScaler()
+                self.scaler_y = RobustScaler()
             
-            # Normalize
             X_reshaped = X.reshape(-1, X.shape[-1])
-            self.scaler.fit(X_reshaped)
-            X_scaled = self.scaler.transform(X_reshaped).reshape(X.shape)
+            self.scaler_X.fit(X_reshaped)
+            X_scaled = self.scaler_X.transform(X_reshaped).reshape(X.shape)
             
-            # Scale targets
-            y_scaled = (y - np.mean(y)) / np.std(y)
+            self.scaler_y.fit(y)
+            y_scaled = self.scaler_y.transform(y)
             
-            # CRITICAL: Recompile model before training to fix optimizer state
             self.model.compile(
                 optimizer=keras.optimizers.Adam(learning_rate=0.0005),
                 loss='huber',
                 metrics=['mae']
             )
             
-            # Ensure arrays are numpy arrays (not TensorFlow tensors)
-            X_scaled = np.array(X_scaled)
-            y_scaled = np.array(y_scaled)
-            
-            # Train in thread pool to avoid blocking event loop
-            import asyncio
-            
-            training_start_time = datetime.utcnow()
-            
-            def _train_model():
-                """CPU-bound training function to run in thread pool"""
-                return self.model.fit(
-                    X_scaled, y_scaled,
-                    epochs=epochs,
-                    batch_size=16,
-                    validation_split=0.2,
-                    verbose=0
-                )
-            
-            # Run training in thread pool executor (non-blocking for event loop)
-            loop = asyncio.get_event_loop()
-            history = await loop.run_in_executor(None, _train_model)
-            
-            training_duration = (datetime.utcnow() - training_start_time).total_seconds()
-            
-            # Save model (also CPU-bound, run in thread pool)
-            def _save_model():
-                model_path = self.get_model_path(self.model_path)
-                scaler_path = self.get_model_path(self.scaler_path)
-                os.makedirs(os.path.dirname(model_path), exist_ok=True)
-                # Explicitly save in Keras format (not HDF5)
-                if model_path.endswith('.keras'):
-                    self.model.save(model_path, save_format='keras')
-                else:
-                    self.model.save(model_path)
-                with open(scaler_path, 'wb') as f:
-                    pickle.dump({
-                        'scaler': self.scaler,
-                        'model_version': model_version,
-                        'dataset_version': dataset_version,
-                        'hyperparams': hyperparams,
-                        'training_window': training_window
-                    }, f)
-            
-            await loop.run_in_executor(None, _save_model)
-            
-            # Store training record in database
-            try:
-                from backend.database import SessionLocal, ModelTrainingRecord
-                db = SessionLocal()
-                training_record = ModelTrainingRecord(
-                    symbol=self._current_symbol or "unknown",
-                    timeframe=self._current_timeframe or "unknown",
-                    bot_name=self.name,
-                    trained_at=datetime.utcnow(),
-                    training_duration_seconds=training_duration,
-                    data_points_used=len(candles),
-                    training_period=training_window,
-                    epochs=epochs,
-                    training_loss=float(history.history['loss'][-1]),
-                    validation_loss=float(history.history.get('val_loss', [0])[-1]),
-                    status='active',
-                    config={
-                        "model_version": model_version,
-                        "dataset_version": dataset_version,
-                        "hyperparams": hyperparams,
-                        "training_window": training_window
-                    }
-                )
-                db.add(training_record)
-                db.commit()
-                db.close()
-            except Exception as e:
-                logger.warning(f"Failed to store training record: {e}")
-            
-            logger.info(
-                f"{self.name} training completed",
-                model_version=model_version,
-                dataset_version=dataset_version
+            history = self.model.fit(
+                X_scaled, y_scaled,
+                epochs=epochs,
+                batch_size=32,
+                validation_split=0.2,
+                verbose=0
             )
+            
+            model_path = self.get_model_path(self.model_path)
+            scaler_path = self.get_model_path(self.scaler_path)
+            os.makedirs(os.path.dirname(model_path), exist_ok=True)
+            
+            if model_path.endswith('.keras'):
+                self.model.save(model_path, save_format='keras')
+            else:
+                self.model.save(model_path)
+                
+            with open(scaler_path, 'wb') as f:
+                pickle.dump({
+                    'scaler_X': self.scaler_X,
+                    'scaler_y': self.scaler_y,
+                    'model_version': 'v2.0-deep-transformer'
+                }, f)
             
             return {
                 "status": "success",
-                "model_version": model_version,
-                "dataset_version": dataset_version,
                 "final_loss": float(history.history['loss'][-1]),
-                "final_mae": float(history.history['mae'][-1]),
-                "training_duration_seconds": training_duration,
-                "hyperparams": hyperparams
+                "model_version": "v2.0-deep-transformer"
             }
-            
         except Exception as e:
             logger.error(
                 f"{self.name} training error",

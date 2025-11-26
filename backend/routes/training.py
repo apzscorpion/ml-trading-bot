@@ -12,6 +12,8 @@ import logging
 from backend.database import get_db, ModelTrainingRecord
 from backend.freddy_merger import freddy_merger
 from backend.ml.training import TrainingOrchestrator
+from backend.services.training_manager import training_manager
+from backend.websocket_manager import manager
 
 router = APIRouter(prefix="/api/training", tags=["training"])
 logger = logging.getLogger(__name__)
@@ -179,6 +181,105 @@ async def force_stop_training():
     return {
         "message": "Training force stopped",
         "status": "stopped"
+    }
+
+
+@router.post("/stop/{training_id}")
+async def stop_training_by_id(
+    training_id: int,
+    reason: Optional[str] = "user_requested",
+    db: Session = Depends(get_db)
+):
+    """
+    Stop/cancel a specific training session by ID.
+    Emergency stop functionality.
+    """
+    try:
+        success = await training_manager.request_cancellation(training_id, reason)
+        
+        if not success:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Training {training_id} not found or already completed"
+            )
+        
+        return {
+            "status": "cancelled",
+            "training_id": training_id,
+            "message": f"Training cancellation requested: {reason}"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error stopping training: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to stop training: {str(e)}")
+
+
+@router.get("/status/{training_id}")
+async def get_training_status_by_id(
+    training_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get detailed status of a specific training session"""
+    record = db.query(ModelTrainingRecord).filter(
+        ModelTrainingRecord.id == training_id
+    ).first()
+    
+    if not record:
+        raise HTTPException(status_code=404, detail="Training not found")
+    
+    return record.to_dict()
+
+
+@router.get("/history")
+async def get_training_history(
+    symbol: Optional[str] = None,
+    timeframe: Optional[str] = None,
+    bot_name: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 50,
+    db: Session = Depends(get_db)
+):
+    """Get training history with optional filters"""
+    query = db.query(ModelTrainingRecord)
+    
+    if symbol:
+        query = query.filter(ModelTrainingRecord.symbol == symbol)
+    if timeframe:
+        query = query.filter(ModelTrainingRecord.timeframe == timeframe)
+    if bot_name:
+        query = query.filter(ModelTrainingRecord.bot_name == bot_name)
+    if status:
+        query = query.filter(ModelTrainingRecord.status == status)
+    
+    records = query.order_by(ModelTrainingRecord.trained_at.desc()).limit(limit).all()
+    
+    return [record.to_dict() for record in records]
+
+
+@router.get("/models/status")
+async def get_models_status(
+    symbol: str,
+    timeframe: str = "5m",
+    db: Session = Depends(get_db)
+):
+    """Get status of all models for a symbol/timeframe"""
+    model_statuses = await training_manager.get_model_status(symbol, timeframe)
+    
+    return {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "models": model_statuses,
+        "active_trainings": training_manager.get_active_trainings()
+    }
+
+
+@router.get("/active")
+async def get_active_trainings():
+    """Get all currently active training sessions"""
+    return {
+        "active_trainings": training_manager.get_active_trainings(),
+        "count": len(training_manager.active_trainings)
     }
 
 

@@ -4,10 +4,10 @@ Uses Freddy AI to generate training targets, stop-losses, and market insights.
 Learns from real-time data and technical analysis reports.
 """
 import asyncio
-import numpy as np
+from typing import Dict, List, Optional, Tuple, Union
+from datetime import datetime, timedelta, timezone
 import pandas as pd
-from typing import Dict, List, Optional, Tuple
-from datetime import datetime, timedelta
+import numpy as np
 import logging
 
 from backend.services.freddy_ai_service import freddy_ai_service, FreddyAIResponse
@@ -110,7 +110,19 @@ class AITrainingOrchestrator:
         # Filter to lookback window
         if not df.empty and 'start_ts' in df.columns:
             cutoff = datetime.utcnow() - timedelta(days=lookback_days)
+            # Ensure start_ts is datetime
             df['start_ts'] = pd.to_datetime(df['start_ts'])
+            
+            # Handle timezone comparison
+            if df['start_ts'].dt.tz is not None and cutoff.tzinfo is None:
+                cutoff = cutoff.replace(tzinfo=timezone.utc)
+            elif df['start_ts'].dt.tz is None and cutoff.tzinfo is not None:
+                df['start_ts'] = df['start_ts'].dt.tz_localize('UTC')
+            
+            # If df has different timezone than cutoff, convert cutoff to match
+            if df['start_ts'].dt.tz is not None and cutoff.tzinfo is not None:
+                 cutoff = cutoff.astimezone(df['start_ts'].dt.tz)
+
             df = df[df['start_ts'] >= cutoff]
         
         logger.info(f"Fetched {len(df)} candles for training")
@@ -245,7 +257,13 @@ class AITrainingOrchestrator:
                 'bollinger_lower': technical_indicators.get('bollinger_lower', 0),
                 'sma_20': technical_indicators.get('sma_20', 0),
                 'ema_12': technical_indicators.get('ema_12', 0),
+                'ema_12': technical_indicators.get('ema_12', 0),
                 'ema_26': technical_indicators.get('ema_26', 0),
+                'ichimoku_conversion': technical_indicators.get('ichimoku_conversion_line', 0),
+                'ichimoku_base': technical_indicators.get('ichimoku_base_line', 0),
+                'cci': technical_indicators.get('cci', 0),
+                'williams_r': technical_indicators.get('williams_r', 0),
+                'psar_direction': technical_indicators.get('psar_direction', 0),
             })
         
         # Replace NaN and Inf
@@ -451,6 +469,11 @@ class AITrainingOrchestrator:
                 point.features.get('volatility_10', 0),
                 point.features.get('rsi', 50),
                 point.features.get('macd', 0),
+                point.features.get('ichimoku_conversion', 0),
+                point.features.get('ichimoku_base', 0),
+                point.features.get('cci', 0),
+                point.features.get('williams_r', 0),
+                point.features.get('psar_direction', 0),
                 point.confidence,
                 # Add target/stop-loss as features (helps model learn risk/reward)
                 (point.target_price - point.features.get('close', 0)) / point.features.get('close', 1),
@@ -472,6 +495,7 @@ class AITrainingOrchestrator:
                 'close', 'open', 'high', 'low', 'volume',
                 'returns_1', 'returns_5', 'returns_10',
                 'volatility_5', 'volatility_10', 'rsi', 'macd',
+                'ichimoku_conversion', 'ichimoku_base', 'cci', 'williams_r', 'psar_direction',
                 'freddy_confidence', 'target_return', 'stop_loss_distance'
             ]
         }

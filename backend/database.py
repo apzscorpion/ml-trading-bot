@@ -200,14 +200,23 @@ class ModelTrainingRecord(Base):
     model_size_mb = Column(Float)
     
     # Status
-    status = Column(String, default='queued')  # 'queued', 'running', 'completed', 'failed', 'active', 'archived'
+    status = Column(String, default='queued')  # 'queued', 'running', 'completed', 'failed', 'active', 'archived', 'cancelled'
     error_message = Column(Text, nullable=True)
+    
+    # Cancellation tracking
+    cancelled_at = Column(DateTime, nullable=True)
+    cancellation_reason = Column(String, nullable=True)  # 'user_requested', 'cpu_failure', 'timeout', 'error'
     
     # Progress tracking (for incremental training)
     progress_percent = Column(Float, default=0.0)
     current_batch = Column(Integer, default=0)
     total_batches = Column(Integer, default=1)
+    current_epoch = Column(Integer, default=0)
+    total_epochs = Column(Integer, default=0)
     progress_message = Column(Text, nullable=True)
+    
+    # Real-time metrics (epoch-by-epoch)
+    real_time_metrics = Column(JSON, nullable=True)  # [{epoch: 1, loss: 0.5, mae: 0.3, ...}, ...]
     
     # Configuration
     config = Column(JSON)  # Store hyperparameters, settings
@@ -233,10 +242,15 @@ class ModelTrainingRecord(Base):
             "model_size_mb": self.model_size_mb,
             "status": self.status,
             "error_message": self.error_message,
+            "cancelled_at": self.cancelled_at.isoformat() if self.cancelled_at else None,
+            "cancellation_reason": self.cancellation_reason,
             "progress_percent": self.progress_percent,
             "current_batch": self.current_batch,
             "total_batches": self.total_batches,
+            "current_epoch": self.current_epoch,
+            "total_epochs": self.total_epochs,
             "progress_message": self.progress_message,
+            "real_time_metrics": self.real_time_metrics,
             "config": self.config,
             "created_at": self.created_at.isoformat() if self.created_at else None
         }

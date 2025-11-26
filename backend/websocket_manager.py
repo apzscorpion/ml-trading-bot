@@ -262,6 +262,79 @@ class ConnectionManager:
         for conn in disconnected:
             self.disconnect(conn)
     
+    async def broadcast_training_started(self, training_data: Dict):
+        """Broadcast training started event"""
+        await self.broadcast_training_progress({
+            **training_data,
+            "event": "started",
+            "status": "running"
+        })
+    
+    async def broadcast_training_epoch(self, epoch_data: Dict):
+        """Broadcast epoch completion with metrics"""
+        await self.broadcast_training_progress({
+            **epoch_data,
+            "event": "epoch_completed",
+            "status": "running"
+        })
+    
+    async def broadcast_training_batch(self, batch_data: Dict):
+        """Broadcast batch completion"""
+        await self.broadcast_training_progress({
+            **batch_data,
+            "event": "batch_completed",
+            "status": "running"
+        })
+    
+    async def broadcast_training_completed(self, completion_data: Dict):
+        """Broadcast training completion"""
+        await self.broadcast_training_progress({
+            **completion_data,
+            "event": "completed",
+            "status": "completed"
+        })
+    
+    async def broadcast_training_failed(self, failure_data: Dict):
+        """Broadcast training failure"""
+        await self.broadcast_training_progress({
+            **failure_data,
+            "event": "failed",
+            "status": "failed"
+        })
+    
+    async def broadcast_training_cancelled(self, cancellation_data: Dict):
+        """Broadcast training cancellation"""
+        await self.broadcast_training_progress({
+            **cancellation_data,
+            "event": "cancelled",
+            "status": "cancelled"
+        })
+    
+    async def broadcast_model_status_update(self, status_data: Dict):
+        """Broadcast model status change (stale, fresh, etc.)"""
+        base_message = {
+            "type": "model:status_update",
+            "timestamp": datetime.utcnow().isoformat(),
+            **status_data,
+            "_timestamp": time.time(),
+            "_sequence": self._get_sequence_number()
+        }
+        
+        disconnected = set()
+        for connection in self.active_connections:
+            queue = self.message_queues.get(connection)
+            if queue:
+                try:
+                    queue.put_nowait(base_message.copy())
+                except asyncio.QueueFull:
+                    logger.warning(f"Message queue full for {connection}, dropping model status")
+                    disconnected.add(connection)
+            else:
+                disconnected.add(connection)
+        
+        for conn in disconnected:
+            self.disconnect(conn)
+    
     def get_reconnect_delay(self, websocket: WebSocket) -> float:
         """
         Get recommended reconnect delay using exponential backoff.
