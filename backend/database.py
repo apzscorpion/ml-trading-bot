@@ -229,7 +229,7 @@ class ModelTrainingRecord(Base):
             "symbol": self.symbol,
             "timeframe": self.timeframe,
             "bot_name": self.bot_name,
-            "trained_at": self.trained_at.isoformat() if self.trained_at else None,
+            "trained_at": (self.trained_at.isoformat() + "Z") if self.trained_at else None,
             "training_duration_seconds": self.training_duration_seconds,
             "data_points_used": self.data_points_used,
             "training_period": self.training_period,

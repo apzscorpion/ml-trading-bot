@@ -413,7 +413,7 @@ def configure_logging(log_level: str = "WARNING", use_colors: bool = False, log_
             getattr(logging, log_level.upper())
         ),
         context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(),
+        logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,
     )
     

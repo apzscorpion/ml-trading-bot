@@ -2,6 +2,26 @@
 Technical indicator calculations using pandas-ta.
 """
 import pandas as pd
+import sys
+from unittest.mock import MagicMock
+
+# Mock numba for Python 3.14 compatibility (pandas_ta requires it)
+try:
+    import numba
+except ImportError:
+    numba = MagicMock()
+    
+    def njit(arg=None, **kwargs):
+        if callable(arg):
+            return arg
+        def wrapper(func):
+            return func
+        return wrapper
+        
+    numba.njit = njit
+    numba.jit = njit
+    sys.modules['numba'] = numba
+
 import pandas_ta as ta
 import numpy as np
 from typing import Dict, List

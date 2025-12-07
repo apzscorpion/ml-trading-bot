@@ -9,6 +9,7 @@ from typing import Dict, List
 from datetime import datetime, timedelta
 import os
 import pickle
+import asyncio
 
 try:
     import tensorflow as tf
@@ -372,15 +373,21 @@ class LSTMBot(BaseBot):
             "meta": {"error": "prediction_failed"}
         }
 
-    async def train(self, candles: List[Dict], epochs: int = 50):
-        """Train the LSTM model"""
+    async def train(self, candles: List[Dict], epochs: int = 50) -> Dict:
+        """
+        Train the LSTM model (async wrapper).
+        Runs the synchronous training logic in a separate thread.
+        """
+        return await asyncio.to_thread(self._train_sync, candles, epochs)
+
+    def _train_sync(self, candles: List[Dict], epochs: int = 50) -> Dict:
+        """
+        Synchronous implementation of training logic.
+        """
         if not TENSORFLOW_AVAILABLE or self.model is None:
             return {"error": "TensorFlow not available"}
         
         try:
-            from datetime import datetime
-            import hashlib
-            
             df = pd.DataFrame(candles)
             features = self._prepare_features(df)
             

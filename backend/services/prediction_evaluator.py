@@ -1,289 +1,223 @@
 """
-Prediction Evaluator - Automatically evaluates predictions against actual prices.
+Prediction Evaluator Service
+Evaluates past predictions against actual market data to identify model mistakes.
 """
-from typing import Dict, List, Optional
+import asyncio
 from datetime import datetime, timedelta
+from typing import List, Dict, Optional
 import numpy as np
+import pandas as pd
 from sqlalchemy.orm import Session
-from backend.database import get_db, Prediction, PredictionEvaluation, Candle
+from sqlalchemy import and_
+
+from backend.database import SessionLocal, Prediction, PredictionEvaluation, Candle
+from backend.utils.data_fetcher import data_fetcher
 from backend.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
 class PredictionEvaluator:
-    """Automatically evaluates predictions against actual prices as candles arrive"""
+    """
+    Evaluates past predictions against actual market data.
+    Calculates RMSE, MAE, and Directional Accuracy.
+    """
     
     def __init__(self):
-        self.evaluation_cache = {}  # Cache evaluations to avoid duplicates
-    
-    def evaluate_prediction(
-        self,
-        prediction_id: int,
-        db: Optional[Session] = None
-    ) -> Optional[Dict]:
+        pass
+        
+    async def evaluate_pending_predictions(self, lookback_hours: int = 24):
         """
-        Evaluate a prediction against actual prices.
+        Find predictions that have matured (time has passed) but haven't been evaluated.
+        Compare predicted prices with actual prices and store results.
         
         Args:
-            prediction_id: ID of the prediction to evaluate
-            db: Database session (optional, will create if not provided)
-        
-        Returns:
-            Dictionary with evaluation metrics, or None if evaluation not possible
+            lookback_hours: How far back to look for unevaluated predictions
         """
-        should_close_db = False
-        if db is None:
-            db = next(get_db())
-            should_close_db = True
-        
+        db = SessionLocal()
         try:
-            # Get prediction
-            prediction = db.query(Prediction).filter(Prediction.id == prediction_id).first()
+            # 1. Find unevaluated predictions that are old enough to be evaluated
+            # We need predictions where produced_at + horizon < now
+            cutoff_time = datetime.utcnow()
+            start_time = cutoff_time - timedelta(hours=lookback_hours)
             
-            if not prediction:
-                logger.warning(f"Prediction {prediction_id} not found")
-                return None
+            # Get IDs of already evaluated predictions to exclude them
+            evaluated_ids = db.query(PredictionEvaluation.prediction_id).filter(
+                PredictionEvaluation.evaluated_at >= start_time
+            ).all()
+            evaluated_ids = {r[0] for r in evaluated_ids}
             
-            # Check if already evaluated recently
-            cache_key = f"{prediction_id}_{prediction.produced_at}"
-            if cache_key in self.evaluation_cache:
-                return self.evaluation_cache[cache_key]
+            # Query pending predictions
+            # Note: We can't easily filter by "produced_at + horizon < now" in SQL directly 
+            # without complex expressions, so we'll fetch recent ones and filter in Python
+            # or use a safe upper bound for horizon (e.g. 4 hours)
+            pending_predictions = db.query(Prediction).filter(
+                Prediction.produced_at >= start_time,
+                Prediction.produced_at <= cutoff_time,
+                Prediction.prediction_type == "ensemble"  # Focus on ensemble for now
+            ).all()
             
-            # Get predicted series
-            predicted_series = prediction.predicted_series
-            if not predicted_series:
-                logger.warning(f"Prediction {prediction_id} has no predicted series")
-                return None
-            
-            # Extract timestamps and predicted prices
-            predicted_prices = []
-            actual_prices = []
-            matched_points = []
-            
-            for point in predicted_series:
-                try:
-                    ts_str = point.get("ts")
-                    if not ts_str:
-                        continue
-                    
-                    # Parse timestamp
-                    if isinstance(ts_str, str):
-                        ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
-                    else:
-                        ts = ts_str
-                    
-                    predicted_price = point.get("price")
-                    if predicted_price is None:
-                        continue
-                    
-                    # Find actual candle at this timestamp
-                    # Allow tolerance based on timeframe
-                    timeframe_minutes = self._timeframe_to_minutes(prediction.timeframe)
-                    tolerance = timedelta(minutes=max(5, timeframe_minutes))
-                    
-                    actual_candle = db.query(Candle).filter(
-                        Candle.symbol == prediction.symbol,
-                        Candle.timeframe == prediction.timeframe,
-                        Candle.start_ts >= ts - tolerance,
-                        Candle.start_ts <= ts + tolerance
-                    ).order_by(Candle.start_ts).first()
-                    
-                    if actual_candle:
-                        predicted_prices.append(float(predicted_price))
-                        actual_prices.append(float(actual_candle.close))
-                        matched_points.append({
-                            "ts": actual_candle.start_ts.isoformat(),
-                            "predicted": float(predicted_price),
-                            "actual": float(actual_candle.close)
-                        })
-                
-                except Exception as e:
-                    logger.warning(f"Error processing prediction point: {e}")
+            # Filter for those that are actually ready and not evaluated
+            ready_predictions = []
+            for pred in pending_predictions:
+                if pred.id in evaluated_ids:
                     continue
+                    
+                # Check if enough time has passed
+                # horizon_minutes is in minutes
+                completion_time = pred.produced_at + timedelta(minutes=pred.horizon_minutes)
+                if completion_time < datetime.utcnow():
+                    ready_predictions.append(pred)
             
-            if not actual_prices or len(actual_prices) < 1:
-                logger.debug(f"No actual data available yet for prediction {prediction_id}")
-                return None
+            if not ready_predictions:
+                logger.info("No pending predictions to evaluate")
+                return
             
-            # Calculate metrics
-            metrics = self._calculate_metrics(predicted_prices, actual_prices)
+            logger.info(f"Found {len(ready_predictions)} pending predictions to evaluate")
             
-            # Store evaluation
-            evaluation = PredictionEvaluation(
-                prediction_id=prediction.id,
-                symbol=prediction.symbol,
-                timeframe=prediction.timeframe,
-                evaluated_at=datetime.utcnow(),
-                rmse=metrics.get("rmse"),
-                mae=metrics.get("mae"),
-                mape=metrics.get("mape"),
-                directional_accuracy=metrics.get("directional_accuracy")
-            )
+            # Group by symbol/timeframe to optimize data fetching
+            grouped_preds = {}
+            for pred in ready_predictions:
+                key = (pred.symbol, pred.timeframe)
+                if key not in grouped_preds:
+                    grouped_preds[key] = []
+                grouped_preds[key].append(pred)
             
-            db.add(evaluation)
+            # Process each group
+            evaluations_created = 0
+            
+            for (symbol, timeframe), preds in grouped_preds.items():
+                # Determine time range needed for this batch
+                min_ts = min(p.produced_at for p in preds)
+                # Max ts is the latest completion time
+                max_ts = max(p.produced_at + timedelta(minutes=p.horizon_minutes) for p in preds)
+                
+                # Fetch actual candles for this range (plus buffer)
+                # We need 1m candles for granular comparison, or matching timeframe
+                # Using matching timeframe is safer for direct comparison
+                actual_candles = await data_fetcher.fetch_candles(
+                    symbol=symbol,
+                    interval=timeframe,
+                    period="5d", # Fetch enough to cover
+                    bypass_cache=False
+                )
+                
+                if not actual_candles:
+                    logger.warning(f"Could not fetch actual data for {symbol} evaluation")
+                    continue
+                
+                # Convert to lookup dict: timestamp -> close price
+                # Ensure timestamps match format
+                actual_prices = {}
+                for c in actual_candles:
+                    # Handle string vs datetime
+                    ts_str = c['start_ts']
+                    if isinstance(ts_str, datetime):
+                        ts_str = ts_str.isoformat()
+                    # Normalize to minute precision if needed, but ISO string matching is usually fine
+                    # if they come from same source. 
+                    # Better: parse to datetime for comparison
+                    try:
+                        ts_dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                        actual_prices[ts_dt] = c['close']
+                    except Exception:
+                        pass
+                
+                # Evaluate each prediction
+                for pred in preds:
+                    try:
+                        evaluation = self._evaluate_single_prediction(pred, actual_prices)
+                        if evaluation:
+                            db.add(evaluation)
+                            evaluations_created += 1
+                    except Exception as e:
+                        logger.error(f"Failed to evaluate prediction {pred.id}: {e}")
+            
             db.commit()
-            
-            result = {
-                "prediction_id": prediction.id,
-                "evaluation_id": evaluation.id,
-                "metrics": metrics,
-                "matched_points": matched_points,
-                "n_samples": len(actual_prices)
-            }
-            
-            # Cache result
-            self.evaluation_cache[cache_key] = result
-            
-            logger.info(
-                f"Evaluated prediction {prediction_id}",
-                extra={
-                    "symbol": prediction.symbol,
-                    "timeframe": prediction.timeframe,
-                    "mape": metrics.get("mape"),
-                    "directional_accuracy": metrics.get("directional_accuracy"),
-                    "n_samples": len(actual_prices)
-                }
-            )
-            
-            return result
+            logger.info(f"Successfully evaluated {evaluations_created} predictions")
             
         except Exception as e:
-            logger.error(f"Error evaluating prediction {prediction_id}: {e}")
+            logger.error(f"Error in evaluate_pending_predictions: {e}", exc_info=True)
             db.rollback()
-            return None
         finally:
-            if should_close_db:
-                db.close()
-    
-    def _calculate_metrics(
-        self,
-        predicted: List[float],
-        actual: List[float]
-    ) -> Dict:
-        """Calculate prediction accuracy metrics"""
-        if not predicted or not actual or len(predicted) != len(actual):
-            return {}
+            db.close()
+
+    def _evaluate_single_prediction(
+        self, 
+        prediction: Prediction, 
+        actual_prices: Dict[datetime, float]
+    ) -> Optional[PredictionEvaluation]:
+        """
+        Compare a single prediction series against actual prices.
+        """
+        if not prediction.predicted_series:
+            return None
+            
+        predicted_points = []
+        actual_points = []
         
-        pred_array = np.array(predicted)
-        actual_array = np.array(actual)
+        # Extract series
+        # predicted_series is list of {ts: iso_str, price: float}
+        for point in prediction.predicted_series:
+            pred_ts_str = point.get('ts')
+            pred_price = point.get('price')
+            
+            if not pred_ts_str or pred_price is None:
+                continue
+                
+            try:
+                pred_dt = datetime.fromisoformat(pred_ts_str.replace("Z", "+00:00"))
+                
+                # Find matching actual price
+                # We look for exact match or closest match within tolerance?
+                # For now, exact match on timeframe start time
+                if pred_dt in actual_prices:
+                    predicted_points.append(pred_price)
+                    actual_points.append(actual_prices[pred_dt])
+            except ValueError:
+                continue
+                
+        if not predicted_points:
+            return None
+            
+        # Calculate metrics
+        y_pred = np.array(predicted_points)
+        y_true = np.array(actual_points)
         
-        # RMSE (Root Mean Square Error)
-        rmse = float(np.sqrt(np.mean((pred_array - actual_array) ** 2)))
+        # RMSE
+        mse = np.mean((y_true - y_pred) ** 2)
+        rmse = np.sqrt(mse)
         
-        # MAE (Mean Absolute Error)
-        mae = float(np.mean(np.abs(pred_array - actual_array)))
+        # MAE
+        mae = np.mean(np.abs(y_true - y_pred))
         
         # MAPE (Mean Absolute Percentage Error)
-        mape = float(np.mean(np.abs((actual_array - pred_array) / np.clip(actual_array, 1e-6, None))) * 100)
+        # Avoid division by zero
+        with np.errstate(divide='ignore', invalid='ignore'):
+            mape = np.mean(np.abs((y_true - y_pred) / y_true)) * 100
+            if not np.isfinite(mape):
+                mape = 0.0
         
         # Directional Accuracy
-        if len(predicted) > 1:
-            pred_direction = np.diff(pred_array) > 0
-            actual_direction = np.diff(actual_array) > 0
-            directional_accuracy = float(np.mean(pred_direction == actual_direction) * 100)
+        # Did it predict the move direction correctly from the start?
+        if len(y_true) > 1:
+            # Direction from first point
+            true_direction = np.sign(y_true[-1] - y_true[0])
+            pred_direction = np.sign(y_pred[-1] - y_pred[0])
+            directional_accuracy = 1.0 if true_direction == pred_direction else 0.0
         else:
             directional_accuracy = 0.0
-        
-        return {
-            "rmse": rmse,
-            "mae": mae,
-            "mape": mape,
-            "directional_accuracy": directional_accuracy
-        }
-    
-    def _timeframe_to_minutes(self, timeframe: str) -> int:
-        """Convert timeframe string to minutes"""
-        mapping = {
-            "1m": 1,
-            "5m": 5,
-            "15m": 15,
-            "30m": 30,
-            "1h": 60,
-            "4h": 240,
-            "1d": 1440,
-        }
-        return mapping.get(timeframe, 5)
-    
-    def evaluate_recent_predictions(
-        self,
-        symbol: Optional[str] = None,
-        timeframe: Optional[str] = None,
-        hours: int = 24,
-        db: Optional[Session] = None
-    ) -> Dict:
-        """
-        Evaluate all recent predictions that haven't been evaluated yet.
-        
-        Args:
-            symbol: Filter by symbol (optional)
-            timeframe: Filter by timeframe (optional)
-            hours: Look back hours (default: 24)
-            db: Database session (optional)
-        
-        Returns:
-            Dictionary with evaluation summary
-        """
-        should_close_db = False
-        if db is None:
-            db = next(get_db())
-            should_close_db = True
-        
-        try:
-            since = datetime.utcnow() - timedelta(hours=hours)
             
-            # Get predictions that haven't been evaluated yet
-            query = db.query(Prediction).filter(
-                Prediction.produced_at >= since
-            )
-            
-            if symbol:
-                query = query.filter(Prediction.symbol == symbol)
-            if timeframe:
-                query = query.filter(Prediction.timeframe == timeframe)
-            
-            predictions = query.all()
-            
-            evaluated_count = 0
-            skipped_count = 0
-            error_count = 0
-            
-            for pred in predictions:
-                # Check if already evaluated
-                existing_eval = db.query(PredictionEvaluation).filter(
-                    PredictionEvaluation.prediction_id == pred.id
-                ).first()
-                
-                if existing_eval:
-                    skipped_count += 1
-                    continue
-                
-                # Evaluate
-                result = self.evaluate_prediction(pred.id, db)
-                if result:
-                    evaluated_count += 1
-                else:
-                    error_count += 1
-            
-            return {
-                "total_predictions": len(predictions),
-                "evaluated": evaluated_count,
-                "skipped": skipped_count,
-                "errors": error_count
-            }
-            
-        except Exception as e:
-            logger.error(f"Error evaluating recent predictions: {e}")
-            return {"error": str(e)}
-        finally:
-            if should_close_db:
-                db.close()
-    
-    def clear_cache(self):
-        """Clear evaluation cache"""
-        self.evaluation_cache.clear()
-
+        return PredictionEvaluation(
+            prediction_id=prediction.id,
+            symbol=prediction.symbol,
+            timeframe=prediction.timeframe,
+            evaluated_at=datetime.utcnow(),
+            rmse=float(rmse),
+            mae=float(mae),
+            mape=float(mape),
+            directional_accuracy=float(directional_accuracy)
+        )
 
 # Global instance
 prediction_evaluator = PredictionEvaluator()
-

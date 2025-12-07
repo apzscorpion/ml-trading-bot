@@ -12,9 +12,10 @@ import logging
 
 from backend.services.freddy_ai_service import freddy_ai_service, FreddyAIResponse
 from backend.utils.data_fetcher import data_fetcher
-from backend.database import SessionLocal, Candle, ModelTrainingRecord
+from backend.database import SessionLocal, Candle, ModelTrainingRecord, Prediction, PredictionEvaluation
 from backend.utils.logger import get_logger
 from backend.services.technical_analysis_service import TechnicalAnalysisService
+from sqlalchemy import desc
 
 logger = get_logger(__name__)
 
@@ -501,6 +502,119 @@ class AITrainingOrchestrator:
         }
         
         return X, y, metadata
+
+    async def generate_dataset_from_mistakes(
+        self,
+        min_error_threshold: float = 2.0,  # MAPE threshold (2%)
+        max_mistakes: int = 100
+    ) -> Tuple[List[AITrainingDataPoint], Dict]:
+        """
+        Generate training dataset specifically from past prediction mistakes.
+        
+        Args:
+            min_error_threshold: Minimum MAPE to consider a mistake
+            max_mistakes: Maximum number of mistakes to process
+            
+        Returns:
+            (training_points, metadata)
+        """
+        logger.info(f"Generating training dataset from mistakes (MAPE > {min_error_threshold}%)")
+        
+        db = SessionLocal()
+        try:
+            # Find high-error evaluations
+            mistakes = db.query(PredictionEvaluation).filter(
+                PredictionEvaluation.mape >= min_error_threshold
+            ).order_by(desc(PredictionEvaluation.evaluated_at)).limit(max_mistakes).all()
+            
+            if not mistakes:
+                logger.info("No significant mistakes found to learn from")
+                return [], {"status": "no_mistakes"}
+            
+            logger.info(f"Found {len(mistakes)} mistakes to analyze")
+            
+            training_points = []
+            processed_count = 0
+            
+            for evaluation in mistakes:
+                # Get original prediction to find timestamp and symbol
+                prediction = db.query(Prediction).filter(Prediction.id == evaluation.prediction_id).first()
+                if not prediction:
+                    continue
+                    
+                # We need to reconstruct the state AT THE TIME of prediction
+                # Fetch candles leading up to produced_at
+                end_time = prediction.produced_at
+                start_time = end_time - timedelta(days=60) # Sufficient lookback
+                
+                # Fetch historical context
+                candles = db.query(Candle).filter(
+                    Candle.symbol == prediction.symbol,
+                    Candle.timeframe == prediction.timeframe,
+                    Candle.start_ts <= end_time,
+                    Candle.start_ts >= start_time
+                ).order_by(Candle.start_ts).all()
+                
+                if not candles or len(candles) < 50:
+                    continue
+                    
+                # Convert to dict format
+                candles_data = [c.to_dict() for c in candles]
+                
+                # Get the ACTUAL outcome that happened
+                # We want the price at horizon
+                horizon_time = prediction.produced_at + timedelta(minutes=prediction.horizon_minutes)
+                
+                actual_outcome_candle = db.query(Candle).filter(
+                    Candle.symbol == prediction.symbol,
+                    Candle.timeframe == prediction.timeframe,
+                    Candle.start_ts >= horizon_time
+                ).order_by(Candle.start_ts).first()
+                
+                if not actual_outcome_candle:
+                    continue
+                    
+                actual_price = actual_outcome_candle.close
+                current_price = candles[-1].close
+                
+                # Calculate what the correct target should have been
+                # For simplicity, we assume target is the actual price at horizon
+                # In reality, we might want the max/min within the horizon for optimal trading
+                
+                # Re-calculate features based on PAST data
+                features = self._calculate_features(candles_data)
+                
+                # Create corrected training point
+                # We use the ACTUAL outcome as the target
+                point = AITrainingDataPoint(
+                    timestamp=prediction.produced_at,
+                    features=features,
+                    target_price=actual_price,
+                    stop_loss=current_price * 0.98, # Default/Estimated
+                    confidence=1.0, # High confidence because this is ground truth
+                    recommendation="Buy" if actual_price > current_price else "Sell",
+                    technical_bias="neutral", # We don't have this historical state easily
+                    support_levels=[],
+                    resistance_levels=[],
+                    news_sentiment=None
+                )
+                
+                training_points.append(point)
+                processed_count += 1
+                
+            logger.info(f"Generated {len(training_points)} correction points from mistakes")
+            
+            return training_points, {
+                "source": "mistakes",
+                "mistakes_found": len(mistakes),
+                "points_generated": len(training_points)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error generating dataset from mistakes: {e}", exc_info=True)
+            return [], {"error": str(e)}
+        finally:
+            db.close()
 
 
 # Global instance

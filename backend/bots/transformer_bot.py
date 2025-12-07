@@ -8,6 +8,7 @@ from typing import Dict, List
 from datetime import datetime, timedelta
 import os
 import pickle
+import asyncio
 
 try:
     import tensorflow as tf
@@ -371,8 +372,17 @@ class TransformerBot(BaseBot):
             "meta": {"error": "prediction_failed"}
         }
 
-    async def train(self, candles: List[Dict], epochs: int = 50):
-        """Train the Transformer model"""
+    async def train(self, candles: List[Dict], epochs: int = 50) -> Dict:
+        """
+        Train the Transformer model (async wrapper).
+        Runs the synchronous training logic in a separate thread.
+        """
+        return await asyncio.to_thread(self._train_sync, candles, epochs)
+
+    def _train_sync(self, candles: List[Dict], epochs: int = 50) -> Dict:
+        """
+        Synchronous implementation of training logic.
+        """
         if not TENSORFLOW_AVAILABLE or self.model is None:
             return {"error": "TensorFlow not available"}
         
@@ -380,8 +390,8 @@ class TransformerBot(BaseBot):
             df = pd.DataFrame(candles)
             features = self._prepare_features(df)
             
-            if len(features) < self.sequence_length + 10:
-                return {"error": "Not enough data"}
+            if features.empty or len(features) < self.sequence_length + 10:
+                return {"error": "Not enough data for training"}
             
             n_features = features.shape[1]
             
@@ -397,6 +407,9 @@ class TransformerBot(BaseBot):
             for i in range(self.sequence_length, len(features)):
                 X.append(features.iloc[i-self.sequence_length:i].values)
                 y.append(float(features['close'].iloc[i]))
+            
+            if not X:
+                return {"error": "Not enough sequences generated for training"}
             
             X = np.array(X, dtype=np.float32)
             y = np.array(y, dtype=np.float32).reshape(-1, 1)

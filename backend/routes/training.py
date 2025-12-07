@@ -323,12 +323,16 @@ async def process_training_queue():
             task = training_state["queue"].pop(0)
             
             # Check if a training job is already running for this combination
-            existing_running = db.query(ModelTrainingRecord).filter(
-                ModelTrainingRecord.symbol == task["symbol"],
-                ModelTrainingRecord.timeframe == task["timeframe"],
-                ModelTrainingRecord.bot_name == task["bot_name"],
-                ModelTrainingRecord.status.in_(['queued', 'running'])
-            ).first()
+            # Run blocking DB query in thread
+            def check_existing():
+                return db.query(ModelTrainingRecord).filter(
+                    ModelTrainingRecord.symbol == task["symbol"],
+                    ModelTrainingRecord.timeframe == task["timeframe"],
+                    ModelTrainingRecord.bot_name == task["bot_name"],
+                    ModelTrainingRecord.status.in_(['queued', 'running'])
+                ).first()
+            
+            existing_running = await asyncio.to_thread(check_existing)
             
             if existing_running:
                 logger.warning(
@@ -412,10 +416,13 @@ async def train_model_async(bot, symbol: str, timeframe: str, db: Session):
         }
         period = period_map.get(timeframe, "60d")
         
-        candles = await data_fetcher.fetch_candles(symbol, timeframe, period)
+        candles = await data_fetcher.fetch_candles(symbol, timeframe, period, bypass_cache=True)
         
-        if not candles or len(candles) < 100:
-            raise ValueError(f"Not enough data: {len(candles) if candles else 0} candles")
+        if not candles or len(candles) < 300:
+            logger.warning(f"Not enough data for {symbol}/{timeframe}: {len(candles) if candles else 0} candles (required: 300)")
+            raise ValueError(f"Not enough data: {len(candles) if candles else 0} candles (required: 300)")
+        
+        logger.info(f"Fetched {len(candles)} candles for {symbol}/{timeframe} (period={period})")
         
         # Train the model
         # Only pass epochs if bot accepts it (deep learning bots)
@@ -465,8 +472,11 @@ async def train_model_async(bot, symbol: str, timeframe: str, db: Session):
             config={"epochs": epochs, "period": period}
         )
         
-        db.add(training_record)
-        db.commit()
+        def save_record():
+            db.add(training_record)
+            db.commit()
+            
+        await asyncio.to_thread(save_record)
         
         logger.info(f"Training completed: {bot.name} for {symbol}/{timeframe}")
         
@@ -491,8 +501,11 @@ async def train_model_async(bot, symbol: str, timeframe: str, db: Session):
             error_message=str(e)
         )
         
-        db.add(training_record)
-        db.commit()
+        def save_failed_record():
+            db.add(training_record)
+            db.commit()
+            
+        await asyncio.to_thread(save_failed_record)
         
         raise
 

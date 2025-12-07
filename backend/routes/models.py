@@ -106,7 +106,7 @@ async def get_training_status(
             
             status_by_symbol[key]["models"].append({
                 "bot_name": record.bot_name,
-                "trained_at": record.trained_at.isoformat(),
+                "trained_at": record.trained_at.isoformat() + "Z",
                 "age_hours": round(age_hours, 1),
                 "is_stale": is_stale,
                 "data_points": record.data_points_used,
